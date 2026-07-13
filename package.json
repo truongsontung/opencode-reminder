@@ -1,0 +1,20 @@
+{
+  "name": "opencode-reminders",
+  "version": "0.1.0",
+  "description": "Personal reminders for opencode — schedule notes that wake your session when due.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["opencode", "opencode-plugin", "reminder", "scheduler"],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.17.18",
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
+  }
+}
