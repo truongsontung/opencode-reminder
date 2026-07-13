@@ -1,13 +1,11 @@
 # BƯỚC 1 — NHẮC MỘT LẦN (in 1m)
 
-Mục tiêu: tạo nhắc một lần, đến hạn tự nhảy vào session ĐÚNG agent hiện tại.
-
-Trong TUI (agent mặc định là `build`), yêu cầu:
+Gọi:
 ```
-Đặt nhắc: reminder_add với when "in 1m" và text "kiểm tra deploy"
+reminder_add when "in 1m" text "kiểm tra deploy"
 ```
 
-Sau đó:
+Gọi để kiểm tra:
 ```
 reminder_list
 ```
@@ -18,16 +16,15 @@ Kết quả mong đợi ngay:
 
 Ghi lại `r_xxxxxx`.
 
-Dừng. Chờ ~1 phút (tối đa +15s do tick).
+Dừng. Chờ ~1 phút (có thể trễ tối đa +15s do tick).
 
-Quan sát khi đến hạn:
-- Xuất hiện MỘT tin nhắn mới trong session: `⏰ Reminder: kiểm tra deploy`
-- Tin nhắn do CHÍNH agent của session này xử lý (ở đây là `build`),
-  KHÔNG bị đổi sang agent khác.
+Quan sát:
+- Nhận được MỘT lượt mới với nội dung: `⏰ Reminder: kiểm tra deploy`
+- Lượt này do CHÍNH agent đang chạy kịch bản xử lý (đúng agent lúc tạo).
 
 Kiểm tra lại:
 ```
 reminder_list
 ```
-- Mục `kiểm tra deploy` KHÔNG còn trong danh sách (nhắc once đã xong).
-- Muốn xem cả mục đã xong: `reminder_list` với `all: true`.
+- Mục `kiểm tra deploy` KHÔNG còn (nhắc once đã xong).
+- Muốn thấy cả mục đã xong: `reminder_list all: true`.

@@ -1,22 +1,21 @@
-# BƯỚC 2 — AGENT ĐỘNG (không hardcode)
+# BƯỚC 2 — NHẮC BẮN ĐÚNG AGENT (self)
 
-Mục tiêu: chứng minh nhắc bắn vào ĐÚNG agent đã tạo nó, không cố định.
+Mục tiêu: nhắc do agent nào tạo thì bắn về đúng agent đó, không nhảy sai.
 
-Trong TUI, chuyển sang agent khác trước khi đặt nhắc.
-Ví dụ đổi sang `plan` (Tab/menu chọn agent, hoặc chạy `opencode` với agent plan).
-
-Với agent = `plan`, yêu cầu:
+Gọi:
 ```
-reminder_add when "in 1m" text "ghi chú từ plan"
+reminder_add when "in 1m" text "ghi chú agent"
 ```
 
 Dừng. Chờ ~1 phút.
 
-Quan sát khi đến hạn:
-- Tin `⏰ Reminder: ghi chú từ plan` được xử lý bởi agent `plan`
-  (đúng agent lúc tạo), KHÔNG phải `build` hay agent mặc định nào.
+Quan sát:
+- Nhận `⏰ Reminder: ghi chú agent` và lượt xử lý là CHÍNH agent đang chạy kịch bản
+  (agent lúc tạo), KHÔNG bị chuyển sang agent khác.
 
 Ý nghĩa:
-- Đây là điểm mấu chốt: plugin lưu `context.agent` lúc tạo và truyền lại khi bắn.
-- Trái ngược với lỗi cũ ở agent-teamwork (hardcode "manager") làm session bị
-  nhảy sai agent.
+- Plugin lưu `context.agent` lúc tạo và truyền lại khi bắn → agent xác định, không
+  hardcode.
+- Ghi chú: nếu người dùng Tab đổi agent giữa chừng, nhắc vẫn bắn bằng agent lúc TẠO
+  (hành vi cố ý, không đổi). Việc đổi agent bằng Tab là thao tác của user, agent tự
+  chạy kịch bản không kiểm thử phần đó.
