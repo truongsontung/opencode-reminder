@@ -8,9 +8,9 @@ import { advance, describe as describeReminder, dueReminders, makeId, type Remin
 
 const z = tool.schema
 
-const DATA_DIR = join(homedir(), ".local", "share", "opencode-reminders")
+const DATA_DIR = process.env.OPENCODE_REMINDERS_DIR ?? join(homedir(), ".local", "share", "opencode-reminders")
 const DATA_FILE = join(DATA_DIR, "reminders.json")
-const TICK_MS = 15_000
+const TICK_MS = Number(process.env.OPENCODE_REMINDERS_TICK_MS ?? "15000")
 
 async function load(): Promise<Reminder[]> {
   const file = Bun.file(DATA_FILE)
@@ -142,5 +142,3 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     },
   }
 }
-
-export default ReminderPlugin
