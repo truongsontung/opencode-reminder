@@ -62,6 +62,18 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     dispose: async () => {
       clearInterval(timer)
     },
+    event: async ({ event }: any) => {
+      // Session bị xoá → xoá luôn reminder của session đó để không bắn vào
+      // session đã chết (fireDue bắt lỗi nhưng reminder lặp vẫn ghi file vô ích).
+      const sid = event?.properties?.sessionID
+        || event?.properties?.info?.sessionID
+        || event?.properties?.info?.id
+      if (event?.type === "session.deleted" && sid) {
+        const list = await load()
+        const filtered = list.filter((r) => r.sessionID !== sid)
+        if (filtered.length !== list.length) await save(filtered)
+      }
+    },
     tool: {
       reminder_add: tool({
         description: `Create a personal reminder that wakes this session when due. ${WHEN_HELP}`,
@@ -98,14 +110,19 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
       }),
 
       reminder_list: tool({
-        description: "List your reminders (pending and completed).",
+        description: "List YOUR reminders for the current session (pending and completed).",
         args: {
           all: z.boolean().optional().describe("Include completed reminders (default false)."),
+          global: z.boolean().optional().describe("Show reminders of ALL sessions instead of just this session."),
         },
-        execute: async (args) => {
+        execute: async (args, context) => {
           const now = Date.now()
           const list = await load()
-          const shown = args.all === true ? list : list.filter((r) => !r.done)
+          // Chỉ hiện reminder của session hiện tại để không lẫn lộn với session
+          // khác (mỗi reminder đã lưu sẵn sessionID). Dùng global:true để xem hết.
+          const sid = context?.sessionID
+          const mine = (!args.global && sid) ? list.filter((r) => r.sessionID === sid) : list
+          const shown = args.all === true ? mine : mine.filter((r) => !r.done)
           if (shown.length === 0) return "No reminders."
           return shown.map((r) => describeReminder(r, now)).join("\n")
         },
