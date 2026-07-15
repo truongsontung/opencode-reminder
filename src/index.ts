@@ -65,6 +65,11 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
           },
         })
         .catch(() => {})
+      // promptAsync bơm vào hội thoại chạy ngầm → TUI không tự refresh đến khi
+      // mở lại session. Hiện toast để reminder THỰC SỰ hiện lên màn hình TUI.
+      await client.tui
+        .showToast({ title: "⏰ Reminder", message: reminder.text, variant: "info" })
+        .catch(() => {})
       fired.push(reminder)
     }
 
