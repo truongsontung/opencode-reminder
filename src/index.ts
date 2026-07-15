@@ -12,6 +12,17 @@ const DATA_DIR = process.env.OPENCODE_REMINDERS_DIR ?? join(homedir(), ".local",
 const DATA_FILE = join(DATA_DIR, "reminders.json")
 const TICK_MS = Number(process.env.OPENCODE_REMINDERS_TICK_MS ?? "15000")
 
+// sessionID -> trạng thái ("idle" | "busy" | "thinking" | "running" | "active").
+// Chỉ bơm reminder vào session đang idle để tránh event rớt vào pending queue
+// của session đang bận → steer API reroute sang session khác (lạc event).
+const sessionStatus = new Map<string, string>()
+function isIdle(sid: string | undefined): boolean {
+  if (!sid) return false
+  const st = sessionStatus.get(sid)
+  // Chỉ defer khi biết chắc đang bận. idle/active/unknown → bơm.
+  return st !== "busy" && st !== "thinking" && st !== "running"
+}
+
 async function load(): Promise<Reminder[]> {
   const file = Bun.file(DATA_FILE)
   if (!(await file.exists())) return []
@@ -35,7 +46,10 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     const due = dueReminders(list, now)
     if (due.length === 0) return
 
+    // Chỉ bơm vào session đang idle; nếu bận → hoãn sang tick sau (không advance).
+    const fired: Reminder[] = []
     for (const reminder of due) {
+      if (!isIdle(reminder.sessionID)) continue
       await client.session
         .promptAsync({
           path: { id: reminder.sessionID },
@@ -46,9 +60,12 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
           },
         })
         .catch(() => {})
+      fired.push(reminder)
     }
 
-    const advanced = list.map((r) => (due.includes(r) ? advance(r, now) : r))
+    if (fired.length === 0) return
+    const firedSet = new Set(fired)
+    const advanced = list.map((r) => (firedSet.has(r) ? advance(r, now) : r))
     await save(advanced)
   }
 
@@ -68,7 +85,13 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
       const sid = event?.properties?.sessionID
         || event?.properties?.info?.sessionID
         || event?.properties?.info?.id
+      if (event?.type === "session.status" && sid) {
+        const raw = event?.properties?.status ?? event?.properties?.info?.status
+        const st = typeof raw === "string" ? raw : raw?.type
+        if (typeof st === "string") sessionStatus.set(sid, st)
+      }
       if (event?.type === "session.deleted" && sid) {
+        sessionStatus.delete(sid)
         const list = await load()
         const filtered = list.filter((r) => r.sessionID !== sid)
         if (filtered.length !== list.length) await save(filtered)
