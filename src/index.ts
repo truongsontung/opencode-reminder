@@ -26,11 +26,15 @@ const TICK_MS = Number(process.env.OPENCODE_REMINDERS_TICK_MS ?? "15000")
 //     user exit (dispose / process exit).
 // ════════════════════════════════════════════════════════════════════════
 
+// ── Module-level shared state (một instance plugin) ──────────────────────
 const sessionStatus = new Map<string, string>()
 const outbox = new Map<string, { text: string; agent: string }[]>()
 let flushChain: Promise<void> = Promise.resolve()
 let clockTimer: any = null
 let running = false
+
+// Ref đến fireDue (được gán bên trong ReminderPlugin để tránh scope issue).
+let fireDueRef: () => Promise<void> = async () => {}
 
 // ── Outbox persistence (resume sau khi mở lại session) ────────────────────
 function saveOutbox() {
@@ -61,14 +65,18 @@ function isIdle(sid: string | undefined): boolean {
 function ensureRunning(): boolean {
   if (!running) {
     running = true
-    clockTimer = setInterval(() => { void fireDue() }, TICK_MS)
+    clockTimer = setInterval(() => { void fireDueRef() }, TICK_MS)
     if (typeof clockTimer.unref === "function") clockTimer.unref()
     return true
   }
   return false
 }
 function stopClockIfIdle() {
-  if (outbox.size === 0 && running) {
+  // Chỉ dừng clock khi KHÔNG còn gì để làm: outbox rỗng VÀ không còn reminder
+  // pending (chưa done, chưa tới hạn nhưng sẽ tới). Nếu còn reminder chưa
+  // tới hạn → giữ clock để quét tới lúc bơm (không tắt sớm).
+  if (outbox.size > 0) return
+  if (running) {
     clearInterval(clockTimer)
     clockTimer = null
     running = false
@@ -97,6 +105,7 @@ async function flushOutbox(sid: string, client: any) {
         path: { id: sid },
         body: { agent: item.agent, parts: [{ type: "text", text: `⏰ Reminder: ${item.text}` }] },
       })
+      .then(() => { void markFired(sid, item.agent, item.text) })
       .catch(() => {
         const cur = outbox.get(sid) ?? []
         cur.push(item); outbox.set(sid, cur)
@@ -118,6 +127,19 @@ async function save(list: readonly Reminder[]): Promise<void> {
   await Bun.write(DATA_FILE, JSON.stringify(list, null, 2))
 }
 
+// Mark một reminder đã bơm thành công (chỉ gọi sau khi promptAsync OK).
+// Một lần → done; lặp → dời kỳ kế. Nếu reminder không tìm thấy → bỏ qua.
+async function markFired(sid: string, agent: string, text: string): Promise<void> {
+  const list = await load()
+  const now = Date.now()
+  const idx = list.findIndex(
+    (r) => r.sessionID === sid && r.agent === agent && r.text === text && !r.done,
+  )
+  if (idx < 0) return
+  list[idx] = advance(list[idx]!, now)
+  await save(list)
+}
+
 const WHEN_HELP =
   'Examples: "in 2m", "in 1h30m", "at 14:30", "daily 09:00", "mon 09:00", "every 10m".'
 
@@ -130,31 +152,34 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     const list = await load()
     const now = Date.now()
     const due = dueReminders(list, now)
-    if (due.length === 0) { stopClockIfIdle(); return }
+    if (due.length === 0) {
+      // Chưa có gì đến hạn, NHƯNG vẫn còn reminder pending → giữ clock chạy
+      // để quét tới lúc bơm. Chỉ dừng hẳn khi không còn reminder nào.
+      const pending = list.filter((r) => !r.done)
+      if (pending.length === 0 && outbox.size === 0) stopClockIfIdle()
+      return
+    }
 
     // Đưa EVERY due reminder vào outbox của ĐÚNG session tạo nó.
     // Không quan tâm session có đang ẩn/active — scheduler vẫn bơm ev vào
     // đúng session để agent tiếp tục chạy.
-    const fired: Reminder[] = []
+    // (Chưa mark done ở đây — chỉ mark sau khi bơm THÀNH CÔNG trong
+    //  flushOutbox → markFired, để fail thì retry, không bỏ sót.)
     for (const reminder of due) {
       const sid = reminder.sessionID
       if (!sid) continue
       const q = outbox.get(sid) ?? []
       q.push({ text: reminder.text, agent: reminder.agent })
       outbox.set(sid, q)
-      fired.push(reminder)
     }
 
-    if (fired.length === 0) return
-    const firedSet = new Set(fired)
-    const advanced = list.map((r) => (firedSet.has(r) ? advance(r, now) : r))
-    await save(advanced)
     saveOutbox()
     ensureRunning()
     for (const sid of outbox.keys()) {
       scheduleFlush(sid, client)
     }
   }
+  fireDueRef = fireDue
 
   function applySessionStatus(event: any): void {
     const sid = event?.properties?.sessionID

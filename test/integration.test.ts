@@ -87,4 +87,74 @@ describe("end-to-end plugin flow", () => {
     )
     expect(String(res)).toContain("Could not understand")
   })
+
+  test("fires into correct session even when hidden (no status event seen)", async () => {
+    const hiddenSid = "ses_hidden"
+    const add = await tools.reminder_add!.execute(
+      { when: "in 1s", text: "hidden task" },
+      { ...ctx, sessionID: hiddenSid, agent: "build" } as never,
+    )
+    expect(String(add)).toContain("hidden task")
+    // Không gửi bất kỳ event session.status/idle nào → session được coi ẩn.
+    await tick(1400)
+    const fired = calls.find((c) => c.id === hiddenSid)
+    expect(fired).toBeDefined()
+    expect(fired!.agent).toBe("build")
+    expect(fired!.text).toContain("hidden task")
+  })
+
+  test("persists outbox and resumes after plugin restart (Ctrl-C -> reopen)", async () => {
+    const resumeSid = "ses_resume"
+    // Tạo reminder đến hạn ngay, nhưng client sẽ fail (không có promptAsync).
+    const brokenClient = { session: null }
+    const hooks2 = await ReminderPlugin({ client: brokenClient } as any)
+    await hooks2.tool!.reminder_add!.execute(
+      { when: "in 1s", text: "resume me" },
+      { ...ctx, sessionID: resumeSid, agent: "plan" } as never,
+    )
+    await tick(1200) // due + scan, nhưng promptAsync fail → giữ outbox + persist
+
+    // Giả lập user Ctrl-C exit rồi mở lại: dispose (save) + khởi tạo lại plugin
+    // với client mới (khôi phục từ outbox.json).
+    await hooks2.dispose?.()
+
+    const callsAfter: PromptCall[] = []
+    const freshClient = {
+      session: {
+        promptAsync: async (o: { path: { id: string }; body: { agent?: string; parts: Array<{ type: string; text: string }> } }) => {
+          callsAfter.push({ id: o.path.id, agent: o.body.agent, text: o.body.parts.map((p) => p.text).join("") })
+          return { data: undefined }
+        },
+      },
+    }
+    const hooks3 = await ReminderPlugin({ client: freshClient } as any)
+    await tick(200) // init loadOutbox → ensureRunning → flush tiếp tục
+
+    const resumed = callsAfter.find((c) => c.id === resumeSid)
+    expect(resumed).toBeDefined()
+    expect(resumed!.text).toContain("resume me")
+    await hooks3.dispose?.()
+  })
+
+  test("retries on next scan tick when promptAsync fails once", async () => {
+    let failOnce = true
+    const callsR: PromptCall[] = []
+    const flakyClient = {
+      session: {
+        promptAsync: async (o: { path: { id: string }; body: { agent?: string; parts: Array<{ type: string; text: string }> } }) => {
+          if (failOnce) { failOnce = false; throw new Error("network down") }
+          callsR.push({ id: o.path.id, agent: o.body.agent, text: o.body.parts.map((p) => p.text).join("") })
+          return { data: undefined }
+        },
+      },
+    }
+    const hooks4 = await ReminderPlugin({ client: flakyClient } as any)
+    await hooks4.tool!.reminder_add!.execute(
+      { when: "in 1s", text: "flaky" },
+      { ...ctx, agent: "plan" } as never,
+    )
+    await tick(1600) // lần 1 fail, scan tick kế tiếp (50ms) retry thành công
+    expect(callsR.find((c) => c.text.includes("flaky"))).toBeDefined()
+    await hooks4.dispose?.()
+  })
 })
