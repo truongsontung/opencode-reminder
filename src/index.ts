@@ -24,32 +24,27 @@ function isIdle(sid: string | undefined): boolean {
 }
 
 // Cập nhật trạng thái session để gate bơm ev đúng lúc idle.
-//  - "busy" đượC ARM bởi session.next.step.started (agent bắt đầu chạy).
-//  - "idle" đượC DISARM bởi session.next.step.ended / session.idle /
-//    session.next.prompted (agent xong bước / chờ input).
-//  - session.status là snapshot thô: CHỈ làm hint ban đầu, KHÔNG đượC override
-//    trạng thái đã biết (tránh snapshot cũ kẹt busy, hoặc bắn giữa bước →
-//    steer reroute làm mất ev).
+//  - "busy" bởi session.next.step.started (agent bắt đầu chạy).
+//  - "idle" bởi session.next.step.ended / session.idle / session.next.prompted
+//    (agent xong bước / chờ input) — VÀ bởi session.status {type:idle}.
+//  - session.status là snapshot trực tiếp: idle/busy đều áp dụng (KHÔNG chặn),
+//    vì nó là tín hiệu đáng tin nhất trong bản build này — nếu chặn idle khi
+//    đang busy sẽ kẹt busy vĩnh viễn → không bao giờ bơm ev.
 function applySessionStatus(event: any): void {
   const sid = event?.properties?.sessionID
     || event?.properties?.info?.sessionID
     || event?.properties?.info?.id
   if (!sid) return
   const type = event?.type
-  // Lifecycle events là authoritative:
   if (type === "session.next.step.started") { sessionStatus.set(sid, "busy"); return }
   if (type === "session.next.step.ended" || type === "session.idle" || type === "session.next.prompted") {
     sessionStatus.set(sid, "idle"); return
   }
-  // session.status: hint không được ghi đè trạng thái đã biết.
   if (type === "session.status") {
     const raw = event?.properties?.status ?? event?.properties?.info?.status
     const st = typeof raw === "string" ? raw : raw?.type
-    if (st === "idle") {
-      if (sessionStatus.get(sid) !== "busy") sessionStatus.set(sid, "idle")
-    } else if (st === "busy" || st === "thinking" || st === "running") {
-      if (sessionStatus.get(sid) === undefined) sessionStatus.set(sid, "busy")
-    }
+    if (st === "idle") sessionStatus.set(sid, "idle")
+    else if (st === "busy" || st === "thinking" || st === "running") sessionStatus.set(sid, st)
   }
 }
 
