@@ -23,6 +23,30 @@ function isIdle(sid: string | undefined): boolean {
   return st !== "busy" && st !== "thinking" && st !== "running"
 }
 
+// Cập nhật trạng thái session từ mọi event liên quan. Quan trọng: opencode báo
+// IDLE qua event riêng "session.idle" (KHÔNG phải session.status type=idle), nên
+// phải bắt nó để reset về idle — nếu không status sẽ kẹt ở busy/thinking mãi
+// (do session.status busy từng bắn) → gate chặn vĩnh viễn, không bao giờ bơm ev.
+function applySessionStatus(event: any): void {
+  const sid = event?.properties?.sessionID
+    || event?.properties?.info?.sessionID
+    || event?.properties?.info?.id
+  if (!sid) return
+  const type = event?.type
+  if (type === "session.idle" || type === "session.next.prompted") {
+    sessionStatus.set(sid, "idle"); return
+  }
+  if (type === "session.next.step.started") {
+    sessionStatus.set(sid, "busy"); return
+  }
+  if (type === "session.status") {
+    const raw = event?.properties?.status ?? event?.properties?.info?.status
+    const st = typeof raw === "string" ? raw : raw?.type
+    if (st === "idle") sessionStatus.set(sid, "idle")
+    else if (st === "busy" || st === "thinking" || st === "running") sessionStatus.set(sid, st)
+  }
+}
+
 async function load(): Promise<Reminder[]> {
   const file = Bun.file(DATA_FILE)
   if (!(await file.exists())) return []
@@ -80,16 +104,13 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
       clearInterval(timer)
     },
     event: async ({ event }: any) => {
+      // Cập nhật trạng thái session (idle/busy) để gate bơm ev.
+      applySessionStatus(event)
       // Session bị xoá → xoá luôn reminder của session đó để không bắn vào
       // session đã chết (fireDue bắt lỗi nhưng reminder lặp vẫn ghi file vô ích).
       const sid = event?.properties?.sessionID
         || event?.properties?.info?.sessionID
         || event?.properties?.info?.id
-      if (event?.type === "session.status" && sid) {
-        const raw = event?.properties?.status ?? event?.properties?.info?.status
-        const st = typeof raw === "string" ? raw : raw?.type
-        if (typeof st === "string") sessionStatus.set(sid, st)
-      }
       if (event?.type === "session.deleted" && sid) {
         sessionStatus.delete(sid)
         const list = await load()
