@@ -29,6 +29,21 @@ Or point at a local checkout during development:
 | `reminder_done` | Mark a reminder done so it stops firing.            |
 | `reminder_del`  | Delete a reminder permanently.                      |
 
+## Agent usage
+
+When the user says "nhắc tôi…", "đặt báo…", "nhắc sau N phút/giờ/ngày", call
+`reminder_add` — **do NOT read this plugin's source to figure it out**.
+
+- `reminder_add when="in 30m" text="nghỉ ngơi"` — remind in 30 minutes
+- `reminder_add when="daily 09:00" text="đọc báo"` — every day at 09:00
+- `reminder_add when="every 2h" text="uống nước"` — repeat every 2 hours
+- `reminder_list` — list this session's reminders
+- `reminder_done <id>` / `reminder_del <id>` — stop / delete
+
+On due time the plugin injects `⏰ Reminder: <text>` into the session and auto-stops
+(repeating ones advance to the next occurrence). Distinct from the scheduler `cal_*`
+tools (personal calendar tied to tasks, re-nags every 5m until `cal_done`/`cal_del`).
+
 ## `when` syntax
 
 | Form           | Meaning                          | Repeats |

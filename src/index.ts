@@ -120,7 +120,7 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     },
     tool: {
       reminder_add: tool({
-        description: `Create a personal reminder that wakes this session when due. ${WHEN_HELP}`,
+        description: `Create a personal reminder that wakes this session when due (injects "⏰ Reminder: <text>" at due time, then auto-stops). Use this tool directly — do NOT read plugin source. ${WHEN_HELP}`,
         args: {
           when: z.string().describe(`When to fire. ${WHEN_HELP}`),
           text: z.string().describe("What to be reminded about."),
