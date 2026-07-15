@@ -66,7 +66,7 @@ describe("end-to-end plugin flow", () => {
     expect(String(list)).toContain("check deploy")
 
     // Wait past the 1s due time; tick runs every 50ms.
-    // fireDue will promptAsync directly (no session status gate in this version).
+    // fireDue checks isIdle(sessionID) — unknown session → idle → bơm trực tiếp.
     await tick(1400)
 
     expect(calls.length).toBeGreaterThanOrEqual(1)
