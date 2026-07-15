@@ -12,12 +12,6 @@ const DATA_DIR = process.env.OPENCODE_REMINDERS_DIR ?? join(homedir(), ".local",
 const DATA_FILE = join(DATA_DIR, "reminders.json")
 const TICK_MS = Number(process.env.OPENCODE_REMINDERS_TICK_MS ?? "15000")
 
-// Gate bơm ev: chỉ bơm vào session đang idle để tránh event rớt vào pending
-// queue của session đang bận → steer API reroute sang session khác (lạc event).
-// Quan trọng: KHÔNG duy trì trạng thái idle/busy qua event map (dễ kẹt busy vĩnh
-// viễn nếu event idle bị sót). Thay vào đó, mỗi lần bơm ta QUERY TRỰC TIẾP
-// client.session.status() để lấy trạng thái THỰC TẾ của session tại thời điểm đó.
-
 async function load(): Promise<Reminder[]> {
   const file = Bun.file(DATA_FILE)
   if (!(await file.exists())) return []
@@ -41,20 +35,7 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     const due = dueReminders(list, now)
     if (due.length === 0) return
 
-    // Query trạng thái THỰC TẾ của mọi session 1 lần duy nhất (tránh gọi API
-    // nhiều lần). Key = sessionID, value = SessionStatus { type: idle|busy|retry }.
-    const statuses = await client.session
-      .status()
-      .then((r: any) => (r?.data ?? r) as Record<string, { type?: string }>)
-      .catch(() => ({}) as Record<string, { type?: string }>)
-
-    // Chỉ HOÃN khi CHẮC CHẮN session đang bận (busy/retry). Mọi trường hợp còn
-    // lại (idle, không có trong map, lỗi query) → bơm, vì mất reminder tệ hơn
-    // reroute. Reminder không advance khi hoãn → tự bơm lại khi session rảnh.
-    const fired: Reminder[] = []
     for (const reminder of due) {
-      const st = statuses[reminder.sessionID]?.type
-      if (st === "busy" || st === "retry") continue
       await client.session
         .promptAsync({
           path: { id: reminder.sessionID },
@@ -65,17 +46,9 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
           },
         })
         .catch(() => {})
-      // promptAsync bơm vào hội thoại chạy ngầm → TUI không tự refresh đến khi
-      // mở lại session. Hiện toast để reminder THỰC SỰ hiện lên màn hình TUI.
-      await client.tui
-        .showToast({ title: "⏰ Reminder", message: reminder.text, variant: "info" })
-        .catch(() => {})
-      fired.push(reminder)
     }
 
-    if (fired.length === 0) return
-    const firedSet = new Set(fired)
-    const advanced = list.map((r) => (firedSet.has(r) ? advance(r, now) : r))
+    const advanced = list.map((r) => (due.includes(r) ? advance(r, now) : r))
     await save(advanced)
   }
 
@@ -89,21 +62,9 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     dispose: async () => {
       clearInterval(timer)
     },
-    event: async ({ event }: any) => {
-      // Session bị xoá → xoá luôn reminder của session đó để không bắn vào
-      // session đã chết (fireDue bắt lỗi nhưng reminder lặp vẫn ghi file vô ích).
-      const sid = event?.properties?.sessionID
-        || event?.properties?.info?.sessionID
-        || event?.properties?.info?.id
-      if (event?.type === "session.deleted" && sid) {
-        const list = await load()
-        const filtered = list.filter((r) => r.sessionID !== sid)
-        if (filtered.length !== list.length) await save(filtered)
-      }
-    },
     tool: {
       reminder_add: tool({
-        description: `Create a personal reminder that wakes THIS session when due (injects "⏰ Reminder: <text>"). SUPPORTS BOTH one-time AND repeating — e.g. when="in 30m" (once) or when="every 5m" / "daily 09:00" / "mon 09:00" (repeat automatically: no cron, no re-create). Repeating ones auto-advance each cycle; stop them with reminder_done / reminder_del. Use this tool directly — do NOT read plugin source. ${WHEN_HELP}`,
+        description: `Create a personal reminder that wakes this session when due. ${WHEN_HELP}`,
         args: {
           when: z.string().describe(`When to fire. ${WHEN_HELP}`),
           text: z.string().describe("What to be reminded about."),
@@ -137,19 +98,14 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
       }),
 
       reminder_list: tool({
-        description: "List YOUR reminders for the current session (pending and completed).",
+        description: "List your reminders (pending and completed).",
         args: {
           all: z.boolean().optional().describe("Include completed reminders (default false)."),
-          global: z.boolean().optional().describe("Show reminders of ALL sessions instead of just this session."),
         },
-        execute: async (args, context) => {
+        execute: async (args) => {
           const now = Date.now()
           const list = await load()
-          // Chỉ hiện reminder của session hiện tại để không lẫn lộn với session
-          // khác (mỗi reminder đã lưu sẵn sessionID). Dùng global:true để xem hết.
-          const sid = context?.sessionID
-          const mine = (!args.global && sid) ? list.filter((r) => r.sessionID === sid) : list
-          const shown = args.all === true ? mine : mine.filter((r) => !r.done)
+          const shown = args.all === true ? list : list.filter((r) => !r.done)
           if (shown.length === 0) return "No reminders."
           return shown.map((r) => describeReminder(r, now)).join("\n")
         },
