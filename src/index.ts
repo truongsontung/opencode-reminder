@@ -120,7 +120,7 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     },
     tool: {
       reminder_add: tool({
-        description: `Create a personal reminder that wakes this session when due (injects "⏰ Reminder: <text>" at due time, then auto-stops). Use this tool directly — do NOT read plugin source. ${WHEN_HELP}`,
+        description: `Create a personal reminder that wakes THIS session when due (injects "⏰ Reminder: <text>"). SUPPORTS BOTH one-time AND repeating — e.g. when="in 30m" (once) or when="every 5m" / "daily 09:00" / "mon 09:00" (repeat automatically: no cron, no re-create). Repeating ones auto-advance each cycle; stop them with reminder_done / reminder_del. Use this tool directly — do NOT read plugin source. ${WHEN_HELP}`,
         args: {
           when: z.string().describe(`When to fire. ${WHEN_HELP}`),
           text: z.string().describe("What to be reminded about."),
