@@ -12,41 +12,11 @@ const DATA_DIR = process.env.OPENCODE_REMINDERS_DIR ?? join(homedir(), ".local",
 const DATA_FILE = join(DATA_DIR, "reminders.json")
 const TICK_MS = Number(process.env.OPENCODE_REMINDERS_TICK_MS ?? "15000")
 
-// sessionID -> trạng thái ("idle" | "busy" | "thinking" | "running" | "active").
-// Chỉ bơm reminder vào session đang idle để tránh event rớt vào pending queue
-// của session đang bận → steer API reroute sang session khác (lạc event).
-const sessionStatus = new Map<string, string>()
-function isIdle(sid: string | undefined): boolean {
-  if (!sid) return false
-  const st = sessionStatus.get(sid)
-  // Chỉ defer khi biết chắc đang bận. idle/active/unknown → bơm.
-  return st !== "busy" && st !== "thinking" && st !== "running"
-}
-
-// Cập nhật trạng thái session để gate bơm ev đúng lúc idle.
-//  - "busy" bởi session.next.step.started (agent bắt đầu chạy).
-//  - "idle" bởi session.next.step.ended / session.idle / session.next.prompted
-//    (agent xong bước / chờ input) — VÀ bởi session.status {type:idle}.
-//  - session.status là snapshot trực tiếp: idle/busy đều áp dụng (KHÔNG chặn),
-//    vì nó là tín hiệu đáng tin nhất trong bản build này — nếu chặn idle khi
-//    đang busy sẽ kẹt busy vĩnh viễn → không bao giờ bơm ev.
-function applySessionStatus(event: any): void {
-  const sid = event?.properties?.sessionID
-    || event?.properties?.info?.sessionID
-    || event?.properties?.info?.id
-  if (!sid) return
-  const type = event?.type
-  if (type === "session.next.step.started") { sessionStatus.set(sid, "busy"); return }
-  if (type === "session.next.step.ended" || type === "session.idle" || type === "session.next.prompted") {
-    sessionStatus.set(sid, "idle"); return
-  }
-  if (type === "session.status") {
-    const raw = event?.properties?.status ?? event?.properties?.info?.status
-    const st = typeof raw === "string" ? raw : raw?.type
-    if (st === "idle") sessionStatus.set(sid, "idle")
-    else if (st === "busy" || st === "thinking" || st === "running") sessionStatus.set(sid, st)
-  }
-}
+// Gate bơm ev: chỉ bơm vào session đang idle để tránh event rớt vào pending
+// queue của session đang bận → steer API reroute sang session khác (lạc event).
+// Quan trọng: KHÔNG duy trì trạng thái idle/busy qua event map (dễ kẹt busy vĩnh
+// viễn nếu event idle bị sót). Thay vào đó, mỗi lần bơm ta QUERY TRỰC TIẾP
+// client.session.status() để lấy trạng thái THỰC TẾ của session tại thời điểm đó.
 
 async function load(): Promise<Reminder[]> {
   const file = Bun.file(DATA_FILE)
@@ -71,10 +41,20 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
     const due = dueReminders(list, now)
     if (due.length === 0) return
 
-    // Chỉ bơm vào session đang idle; nếu bận → hoãn sang tick sau (không advance).
+    // Query trạng thái THỰC TẾ của mọi session 1 lần duy nhất (tránh gọi API
+    // nhiều lần). Key = sessionID, value = SessionStatus { type: idle|busy|retry }.
+    const statuses = await client.session
+      .status()
+      .then((r: any) => (r?.data ?? r) as Record<string, { type?: string }>)
+      .catch(() => ({}) as Record<string, { type?: string }>)
+
+    // Chỉ HOÃN khi CHẮC CHẮN session đang bận (busy/retry). Mọi trường hợp còn
+    // lại (idle, không có trong map, lỗi query) → bơm, vì mất reminder tệ hơn
+    // reroute. Reminder không advance khi hoãn → tự bơm lại khi session rảnh.
     const fired: Reminder[] = []
     for (const reminder of due) {
-      if (!isIdle(reminder.sessionID)) continue
+      const st = statuses[reminder.sessionID]?.type
+      if (st === "busy" || st === "retry") continue
       await client.session
         .promptAsync({
           path: { id: reminder.sessionID },
@@ -105,15 +85,12 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
       clearInterval(timer)
     },
     event: async ({ event }: any) => {
-      // Cập nhật trạng thái session (idle/busy) để gate bơm ev.
-      applySessionStatus(event)
       // Session bị xoá → xoá luôn reminder của session đó để không bắn vào
       // session đã chết (fireDue bắt lỗi nhưng reminder lặp vẫn ghi file vô ích).
       const sid = event?.properties?.sessionID
         || event?.properties?.info?.sessionID
         || event?.properties?.info?.id
       if (event?.type === "session.deleted" && sid) {
-        sessionStatus.delete(sid)
         const list = await load()
         const filtered = list.filter((r) => r.sessionID !== sid)
         if (filtered.length !== list.length) await save(filtered)
