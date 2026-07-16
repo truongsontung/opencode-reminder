@@ -28,7 +28,7 @@ const TICK_MS = Number(process.env.OPENCODE_REMINDERS_TICK_MS ?? "15000")
 
 // ── Module-level shared state (một instance plugin) ──────────────────────
 const sessionStatus = new Map<string, string>()
-const outbox = new Map<string, { text: string; agent: string }[]>()
+const outbox = new Map<string, { id: string; text: string; agent: string }[]>()
 let flushChain: Promise<void> = Promise.resolve()
 let clockTimer: any = null
 let running = false
@@ -72,15 +72,10 @@ function ensureRunning(): boolean {
   return false
 }
 function stopClockIfIdle() {
-  // Chỉ dừng clock khi KHÔNG còn gì để làm: outbox rỗng VÀ không còn reminder
-  // pending (chưa done, chưa tới hạn nhưng sẽ tới). Nếu còn reminder chưa
-  // tới hạn → giữ clock để quét tới lúc bơm (không tắt sớm).
-  if (outbox.size > 0) return
-  if (running) {
-    clearInterval(clockTimer)
-    clockTimer = null
-    running = false
-  }
+  // Theo thiết kế: clock chạy liên tục từ khi khởi tạo, chỉ dừng khi session
+  // exit (dispose). KHÔNG tự dừng khi rảnh — nếu dừng, reminder tới hạn sau
+  // đó sẽ không bao giờ được quét (bỏ qua mọi chu kỳ). Dispose xử lý clear.
+  return
 }
 
 function scheduleFlush(sid: string, client: any) {
@@ -100,16 +95,16 @@ async function flushOutbox(sid: string, client: any) {
       cur.push(item); outbox.set(sid, cur)
       continue
     }
-    await client.session
-      .promptAsync({
-        path: { id: sid },
-        body: { agent: item.agent, parts: [{ type: "text", text: `⏰ Reminder: ${item.text}` }] },
-      })
-      .then(() => { void markFired(sid, item.agent, item.text) })
-      .catch(() => {
-        const cur = outbox.get(sid) ?? []
-        cur.push(item); outbox.set(sid, cur)
-      })
+      await client.session
+        .promptAsync({
+          path: { id: sid },
+          body: { agent: item.agent, parts: [{ type: "text", text: `⏰ Reminder: ${item.text}` }] },
+        })
+        .then(() => { void markFired(sid, item.agent, item.id) })
+        .catch(() => {
+          const cur = outbox.get(sid) ?? []
+          cur.push(item); outbox.set(sid, cur)
+        })
   }
   saveOutbox()
   stopClockIfIdle()
@@ -128,12 +123,12 @@ async function save(list: readonly Reminder[]): Promise<void> {
 }
 
 // Mark một reminder đã bơm thành công (chỉ gọi sau khi promptAsync OK).
-// Một lần → done; lặp → dời kỳ kế. Nếu reminder không tìm thấy → bỏ qua.
-async function markFired(sid: string, agent: string, text: string): Promise<void> {
+// Một lần → done; lặp → dời kỳ kế. Tìm bằng id (duy nhất, robust hơn text).
+async function markFired(sid: string, agent: string, id: string): Promise<void> {
   const list = await load()
   const now = Date.now()
   const idx = list.findIndex(
-    (r) => r.sessionID === sid && r.agent === agent && r.text === text && !r.done,
+    (r) => r.sessionID === sid && r.agent === agent && r.id === id && !r.done,
   )
   if (idx < 0) return
   list[idx] = advance(list[idx]!, now)
@@ -169,7 +164,7 @@ export const ReminderPlugin: Plugin = async ({ client }) => {
       const sid = reminder.sessionID
       if (!sid) continue
       const q = outbox.get(sid) ?? []
-      q.push({ text: reminder.text, agent: reminder.agent })
+      q.push({ id: reminder.id, text: reminder.text, agent: reminder.agent })
       outbox.set(sid, q)
     }
 

@@ -129,7 +129,11 @@ export function nextFire(schedule: Schedule, now: number, last?: number): number
   }
 
   if (schedule.kind === "every") {
-    const base = last ?? now
+    // Căn theo `now` (thời điểm bơm thực tế) thay vì `last` (nextAt cũ).
+    // Nếu markFired chạy trễ >1 chu kỳ, dùng `last` sẽ nhảy qua chu kỳ và
+    // bỏ qua cửa sổ OVERDUE. Dùng `now` đảm bảo nextAt luôn = chu kỳ tiếp
+    // theo tính từ lúc bơm, không bỏ sót.
+    const base = now
     let next = base + schedule.intervalMs
     while (next <= now) next += schedule.intervalMs
     return next
