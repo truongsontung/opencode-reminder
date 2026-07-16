@@ -1,304 +1,334 @@
-import type { Plugin } from "@opencode-ai/plugin"
-import { tool } from "@opencode-ai/plugin"
-import { mkdir } from "node:fs/promises"
-import { homedir } from "node:os"
-import { join } from "node:path"
-import { parseWhen } from "./when.ts"
-import { advance, describe as describeReminder, dueReminders, makeId, type Reminder } from "./store.ts"
-
-const z = tool.schema
-
-const DATA_DIR = process.env.OPENCODE_REMINDERS_DIR ?? join(homedir(), ".local", "share", "opencode-reminders")
-const DATA_FILE = join(DATA_DIR, "reminders.json")
-const OUTBOX_FILE = join(DATA_DIR, "outbox.json")
-const TICK_MS = Number(process.env.OPENCODE_REMINDERS_TICK_MS ?? "15000")
+import { z } from "zod"
+function tool(def: any) { return def }
+tool.schema = z
 
 // ════════════════════════════════════════════════════════════════════════
-// Cơ chế bơm vào inline prompt — y hệt agent-teamwork-scheduler:
-//   - Bơm ĐÚNG session tạo reminder (reminder.sessionID) qua promptAsync,
-//     NGAY CẢ KHI session đó đang ẩn / không dùng đến (giúp agent tiếp tục
-//     chạy nhiệm vụ user giao). Không chặn flush vì session ẩn.
-//   - Chỉ giữ lại trong outbox khi promptAsync THẬT SỰ fail (lỗi network/
-//     client mất). Khi fail → retry mỗi tick cho tới khi bơm được.
-//   - outbox được PERSIST xuống đĩa: khi user Ctrl-C exit rồi mở lại
-//     session, plugin load outbox dang dở và tiếp tục flush (resume).
-//   - clock chỉ chạy khi có thứ để bơm (outbox/reminder due). Dừng hẳn khi
-//     user exit (dispose / process exit).
+//  reminder.ts  —  bộ nhắc cá nhân (copy cấu trúc agent-teamwork-scheduler,
+//  bỏ phần worker, chỉ giữ lịch nhắc). Lưu per-session <sid>.reminder.json.
+//  Dùng tool() + tool.schema.string() y hệt scheduler.
 // ════════════════════════════════════════════════════════════════════════
 
-// ── Module-level shared state (một instance plugin) ──────────────────────
-const sessionStatus = new Map<string, string>()
-const outbox = new Map<string, { id: string; text: string; agent: string }[]>()
-let flushChain: Promise<void> = Promise.resolve()
-let clockTimer: any = null
-let running = false
+let _client: any = null
 
-// Ref đến fireDue (được gán bên trong ReminderPlugin để tránh scope issue).
-let fireDueRef: () => Promise<void> = async () => {}
+const REMIND_INTERVAL_MS = 5 * 60 * 1000   // throttle nhắc thường
+const BATCH_WINDOW_MS = 60 * 1000          // cửa sổ gộp: nhắc luôn mục đến trong 1 phút tới
 
-// ── Outbox persistence (resume sau khi mở lại session) ────────────────────
-function saveOutbox() {
+const STATE_DIR = `${process.env.HOME}/.local/share/opencode-reminders`
+
+function reminderFile() {
+  return _sid ? `${STATE_DIR}/${_sid}.reminder.json` : undefined
+}
+
+function saveReminders() {
   try {
+    const f = reminderFile()
+    if (!f) return
     const fs = require("fs")
-    fs.mkdirSync(DATA_DIR, { recursive: true })
-    fs.writeFileSync(OUTBOX_FILE, JSON.stringify([...outbox.entries()]))
+    fs.mkdirSync(STATE_DIR, { recursive: true })
+    fs.writeFileSync(f, JSON.stringify([...reminders.values()]))
   } catch {}
 }
-function loadOutbox() {
+function loadReminders() {
   try {
+    const f = reminderFile()
+    if (!f) return
     const fs = require("fs")
-    const arr = JSON.parse(fs.readFileSync(OUTBOX_FILE, "utf8"))
-    if (Array.isArray(arr)) {
-      outbox.clear()
-      for (const [sid, q] of arr) outbox.set(sid, q)
+    const data = JSON.parse(fs.readFileSync(f, "utf8"))
+    const now = Date.now()
+    reminders.clear()
+    for (const ev of (data || [])) {
+      if (ev.repeat !== "none" && ev.nextAt <= now && !ev.due) ev.nextAt = nextOccurrence(ev, now)
+      reminders.set(ev.id, ev)
     }
-    try { fs.unlinkSync(OUTBOX_FILE) } catch {}
   } catch {}
 }
 
-function isIdle(sid: string | undefined): boolean {
-  if (!sid) return false
-  const st = sessionStatus.get(sid)
-  return st !== "busy" && st !== "thinking" && st !== "running"
+interface Reminder {
+  id: string
+  label: string
+  nextAt: number
+  repeat: "none" | "daily" | "weekly" | "interval"
+  hour: number
+  minute: number
+  dow?: number
+  intervalMs?: number
+  lastRemindAt?: number
+  due?: boolean
+  dueAt?: number
+}
+
+const reminders = new Map<string, Reminder>()
+let seq = 0
+let clockTimer: any = null
+let pendingBatch: string[] = []
+let verbose = false
+
+let pushQueue: Promise<void> = Promise.resolve()
+async function push(msg: string, sid?: string) {
+  const target = sid || _sid
+  if (!target || !_client?.session?.promptAsync) return
+  pushQueue = pushQueue
+    .then(async () => {
+      await _client.session.promptAsync({
+        path: { id: target },
+        body: { parts: [{ type: "text", text: msg }] },
+      })
+    })
+    .catch(() => {})
+  await pushQueue
+}
+
+let _sid: string | undefined
+
+// ── When parsing (copy nguyên từ scheduler) ───────────────────────────────
+const DAY_MAP: any = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }
+function parseWhen(when: string, now: number): Reminder {
+  const tokens = when.trim().split(/\s+/)
+  let repeat: "none" | "daily" | "weekly" = "none"
+  let i = 0
+  if (tokens[i] === "daily") { repeat = "daily"; i++ }
+  else if (tokens[i] === "weekly") { repeat = "weekly"; i++ }
+  if (tokens[i]?.toLowerCase() === "in") {
+    const rel = (tokens[i + 1] ?? "").match(/^(\d+)(m|h)$/i)
+    if (rel) {
+      const n = parseInt(rel[1]!)
+      const ms = rel[2]!.toLowerCase() === "h" ? n * 3600000 : n * 60000
+      return { id: "", label: "", nextAt: now + ms, repeat: "none", hour: 0, minute: 0 }
+    }
+    throw new Error("định dạng thời gian không hợp lệ. VD: 14:30 | daily 09:00 | in 30m")
+  }
+  if (tokens[i]?.toLowerCase() === "every") {
+    const rel = (tokens[i + 1] ?? "").match(/^(\d+)(m|h)$/i)
+    if (rel) {
+      const n = parseInt(rel[1]!)
+      const ms = rel[2]!.toLowerCase() === "h" ? n * 3600000 : n * 60000
+      if (ms < 60000) throw new Error("chu kỳ lặp tối thiểu 1 phút")
+      return { id: "", label: "", nextAt: now + ms, repeat: "interval", intervalMs: ms, hour: 0, minute: 0 }
+    }
+    throw new Error("định dạng chu kỳ không hợp lệ. VD: every 90m | every 30m | every 2h")
+  }
+  let dow: number | undefined
+  const dowKey = tokens[i]?.toLowerCase()
+  if (dowKey !== undefined && DAY_MAP[dowKey] !== undefined) {
+    dow = DAY_MAP[dowKey]
+    if (repeat === "none") repeat = "weekly"
+    i++
+  }
+  const hm = (tokens[i] ?? "").match(/^(\d{1,2}):(\d{2})$/)
+  if (!hm) throw new Error("định dạng thời gian không hợp lệ. VD: 14:30 | daily 09:00 | in 30m")
+  const hour = parseInt(hm[1]!); const minute = parseInt(hm[2]!)
+  const d = new Date(now); d.setSeconds(0, 0); d.setMilliseconds(0)
+  d.setHours(hour, minute, 0, 0)
+  if (repeat === "weekly") {
+    let guard = 0
+    while ((d.getTime() <= now || d.getDay() !== dow) && guard < 8) { d.setDate(d.getDate() + 1); d.setHours(hour, minute, 0, 0); guard++ }
+  } else {
+    if (d.getTime() <= now) d.setDate(d.getDate() + 1)
+  }
+  return { id: "", label: "", nextAt: d.getTime(), repeat, hour, minute, dow }
+}
+function repeatLabel(ev: Reminder): string {
+  if (ev.repeat !== "interval") return ev.repeat
+  const m = Math.round((ev.intervalMs || 0) / 60000)
+  return m % 60 === 0 ? `every ${m / 60}h` : `every ${m}m`
+}
+function nextOccurrence(ev: Reminder, now: number): number {
+  if (ev.repeat === "interval") {
+    const step = ev.intervalMs || 60000
+    let n = now + step
+    while (n <= now) n += step
+    return n
+  }
+  if (ev.repeat === "daily") {
+    const d = new Date(now); d.setSeconds(0, 0); d.setMilliseconds(0); d.setHours(ev.hour, ev.minute, 0, 0)
+    if (d.getTime() <= now) d.setDate(d.getDate() + 1)
+    return d.getTime()
+  }
+  if (ev.repeat === "weekly") {
+    const d = new Date(now); d.setSeconds(0, 0); d.setMilliseconds(0)
+    let guard = 0
+    while (d.getDay() !== ev.dow && guard < 8) { d.setDate(d.getDate() + 1); guard++ }
+    d.setHours(ev.hour, ev.minute, 0, 0)
+    return d.getTime()
+  }
+  return ev.nextAt
+}
+
+// ── Clock loop (mỗi phút, copy nguyên scheduler) ─────────────────────────
+function startClock() {
+  if (clockTimer) return
+  scheduleNext()
+}
+function scheduleNext() {
+  clockTimer = setTimeout(async () => {
+    try {
+      await tick()
+    } finally {
+      scheduleNext()
+    }
+  }, 60_000)
+}
+function stopClock() {
+  if (clockTimer) { clearTimeout(clockTimer); clockTimer = null }
+}
+
+async function tick() {
+  const now = Date.now()
+  pendingBatch = []
+  const near: Reminder[] = []
+  let trulyDue = 0
+
+  for (const [id, ev] of reminders) {
+    if (ev.due) {
+      if (!ev.lastRemindAt || now - ev.lastRemindAt >= REMIND_INTERVAL_MS) {
+        const late = Math.max(0, Math.round((now - (ev.dueAt || now)) / 60000))
+        pendingBatch.push(`reminder ${id} ${ev.label}${late ? ` (trễ ${late}m) — gọi reminder_done xác nhận` : ""}`)
+        ev.lastRemindAt = now
+        trulyDue++
+      }
+    } else if (now >= ev.nextAt) {
+      ev.due = true; ev.dueAt = ev.nextAt; ev.lastRemindAt = now
+      pendingBatch.push(`reminder ${id} ${ev.label}`)
+      trulyDue++
+    } else if (ev.nextAt <= now + BATCH_WINDOW_MS) {
+      near.push(ev)
+    }
+  }
+
+  if (trulyDue > 0) {
+    for (const ev of near) {
+      if (ev.lastRemindAt && now - ev.lastRemindAt < REMIND_INTERVAL_MS) continue
+      pendingBatch.push(`reminder ${ev.id} ${ev.label} (~${Math.max(1, Math.round((ev.nextAt - now) / 1000))}s)`)
+      ev.lastRemindAt = now
+    }
+  }
+
+  if (pendingBatch.length) {
+    await push(`!ev remind ${pendingBatch.length}: ` + pendingBatch.join(" | "))
+  }
+
+  if (verbose) {
+    const ts = new Date(now).toTimeString().slice(0, 8)
+    const lines = [`[tick ${ts}]`]
+    if (reminders.size === 0) lines.push("  reminders: (empty)")
+    else for (const ev of reminders.values()) {
+      const till = Math.round((ev.nextAt - now) / 1000)
+      lines.push(`  ${ev.id} "${ev.label}" [${repeatLabel(ev)}] in=${till}s`)
+    }
+    lines.push(`  trulyDue=${trulyDue} batch=${pendingBatch.length}`)
+    await push(lines.join("\n"))
+  }
+
+  saveReminders()
+}
+
+// ── Tools (y hệt style scheduler: tool() + tool.schema.string()) ──────────
+const tools = {
+  reminder_add: tool({
+    description: 'Add reminder. when: HH:MM | in <N>m|h | daily HH:MM | <dow> HH:MM | every <N>m|h (any interval, 1.5h=90m).',
+    args: { label: tool.schema.string(), when: tool.schema.string() },
+    async execute(args: any) {
+      if (ensureRunning()) push("!ev reminder ready")
+      const ev = parseWhen(args.when, Date.now())
+      ev.id = `r-${++seq}`
+      ev.label = args.label
+      reminders.set(ev.id, ev)
+      saveReminders()
+      return `+${ev.id} ${new Date(ev.nextAt).toTimeString().slice(0, 5)} [${repeatLabel(ev)}] ${ev.label}`
+    },
+  }),
+
+  reminder_list: tool({
+    description: "Liệt kê tất cả nhắc (trạng thái: upcoming / chờ xác nhận).",
+    args: {},
+    async execute() {
+      if (reminders.size === 0) return "(trống)"
+      const now = Date.now()
+      return [...reminders.values()].map(ev => {
+        const st = ev.due
+          ? `🔔 chờ xác nhận (trễ ${Math.max(0, Math.round((now - (ev.dueAt || now)) / 60000))}m)`
+          : `⏰ ${new Date(ev.nextAt).toTimeString().slice(0, 5)}`
+        return `${ev.id} ${st} [${repeatLabel(ev)}] ${ev.label}`
+      }).join("\n")
+    },
+  }),
+
+  reminder_done: tool({
+    description: "Confirm reminder done (this occurrence), on !ev reminder due. One-time->deleted; repeat->next occurrence.",
+    args: { id: tool.schema.string() },
+    async execute(args: any) {
+      const ev = reminders.get(args.id)
+      if (!ev) return "(không tìm thấy)"
+      if (ev.repeat === "none") {
+        reminders.delete(args.id)
+        saveReminders()
+        return `done ${args.id} (đã xóa)`
+      }
+      ev.nextAt = nextOccurrence(ev, Date.now())
+      ev.due = false; ev.dueAt = undefined; ev.lastRemindAt = undefined
+      saveReminders()
+      return `done ${args.id} → kỳ kế ${new Date(ev.nextAt).toTimeString().slice(0, 5)}`
+    },
+  }),
+
+  reminder_del: tool({
+    description: "Xóa nhắc vĩnh viễn.",
+    args: { id: tool.schema.string() },
+    async execute(args: any) {
+      if (reminders.delete(args.id)) { saveReminders(); return `-${args.id}` }
+      return "(không tìm thấy)"
+    },
+  }),
+
+  reminder_verbose: tool({
+    description: "Bật/tắt log debug mỗi phút [on|off].",
+    args: { on: tool.schema.string().optional() },
+    async execute(args: any) {
+      if (args.on === "on" || args.on === "1" || args.on === "true") verbose = true
+      else if (args.on === "off" || args.on === "0" || args.on === "false") verbose = false
+      else verbose = !verbose
+      return `verbose ${verbose ? "ON" : "OFF"}`
+    },
+  }),
+
+  reminder_start: tool({
+    description: "Khởi chạy clock nhắc nếu chưa chạy.",
+    args: {},
+    async execute() {
+      const started = ensureRunning()
+      if (started) push("!ev reminder ready")
+      return clockTimer ? (started ? "reminder ready" : "reminder running") : "reminder stopped"
+    },
+  }),
 }
 
 function ensureRunning(): boolean {
-  if (!running) {
-    running = true
-    clockTimer = setInterval(() => { void fireDueRef() }, TICK_MS)
-    if (typeof clockTimer.unref === "function") clockTimer.unref()
+  if (!clockTimer) {
+    startClock()
     return true
   }
   return false
 }
-function stopClockIfIdle() {
-  // Theo thiết kế: clock chạy liên tục từ khi khởi tạo, chỉ dừng khi session
-  // exit (dispose). KHÔNG tự dừng khi rảnh — nếu dừng, reminder tới hạn sau
-  // đó sẽ không bao giờ được quét (bỏ qua mọi chu kỳ). Dispose xử lý clear.
-  return
-}
 
-function scheduleFlush(sid: string, client: any) {
-  flushChain = flushChain.then(() => flushOutbox(sid, client)).catch(() => {})
-}
-
-async function flushOutbox(sid: string, client: any) {
-  const q = outbox.get(sid)
-  if (!q || q.length === 0) return
-  // Bơm NGAY dù session ẩn (không chặn bằng sessionStatus/knownSessions).
-  // Chỉ giữ lại item khi promptAsync fail → retry tick sau.
-  const pending = [...q]
-  outbox.set(sid, [])
-  for (const item of pending) {
-    if (!client?.session?.promptAsync) { // client chưa sẵn → giữ lại
-      const cur = outbox.get(sid) ?? []
-      cur.push(item); outbox.set(sid, cur)
-      continue
-    }
-      await client.session
-        .promptAsync({
-          path: { id: sid },
-          body: { agent: item.agent, parts: [{ type: "text", text: `⏰ Reminder: ${item.text}` }] },
-        })
-        .then(() => { void markFired(sid, item.agent, item.id) })
-        .catch(() => {
-          const cur = outbox.get(sid) ?? []
-          cur.push(item); outbox.set(sid, cur)
-        })
-  }
-  saveOutbox()
-  stopClockIfIdle()
-}
-
-async function load(): Promise<Reminder[]> {
-  const file = Bun.file(DATA_FILE)
-  if (!(await file.exists())) return []
-  const parsed = await file.json().catch(() => [])
-  return Array.isArray(parsed) ? (parsed as Reminder[]) : []
-}
-
-async function save(list: readonly Reminder[]): Promise<void> {
-  await mkdir(DATA_DIR, { recursive: true })
-  await Bun.write(DATA_FILE, JSON.stringify(list, null, 2))
-}
-
-// Mark một reminder đã bơm thành công (chỉ gọi sau khi promptAsync OK).
-// Một lần → done; lặp → dời kỳ kế. Tìm bằng id (duy nhất, robust hơn text).
-async function markFired(sid: string, agent: string, id: string): Promise<void> {
-  const list = await load()
-  const now = Date.now()
-  const idx = list.findIndex(
-    (r) => r.sessionID === sid && r.agent === agent && r.id === id && !r.done,
-  )
-  if (idx < 0) return
-  list[idx] = advance(list[idx]!, now)
-  await save(list)
-}
-
-const WHEN_HELP =
-  'Examples: "in 2m", "in 1h30m", "at 14:30", "daily 09:00", "mon 09:00", "every 10m".'
-
-export const ReminderPlugin: Plugin = async ({ client }) => {
-  // Resume: nạp outbox dang dở từ lần chạy trước (nếu có) và tiếp tục bơm.
-  loadOutbox()
-  if (outbox.size > 0) ensureRunning()
-
-  async function fireDue(): Promise<void> {
-    const list = await load()
-    const now = Date.now()
-    const due = dueReminders(list, now)
-    if (due.length === 0) {
-      // Chưa có gì đến hạn, NHƯNG vẫn còn reminder pending → giữ clock chạy
-      // để quét tới lúc bơm. Chỉ dừng hẳn khi không còn reminder nào.
-      const pending = list.filter((r) => !r.done)
-      if (pending.length === 0 && outbox.size === 0) stopClockIfIdle()
-      return
-    }
-
-    // Đưa EVERY due reminder vào outbox của ĐÚNG session tạo nó.
-    // Không quan tâm session có đang ẩn/active — scheduler vẫn bơm ev vào
-    // đúng session để agent tiếp tục chạy.
-    // (Chưa mark done ở đây — chỉ mark sau khi bơm THÀNH CÔNG trong
-    //  flushOutbox → markFired, để fail thì retry, không bỏ sót.)
-    for (const reminder of due) {
-      const sid = reminder.sessionID
-      if (!sid) continue
-      const q = outbox.get(sid) ?? []
-      q.push({ id: reminder.id, text: reminder.text, agent: reminder.agent })
-      outbox.set(sid, q)
-    }
-
-    saveOutbox()
-    ensureRunning()
-    for (const sid of outbox.keys()) {
-      scheduleFlush(sid, client)
-    }
-  }
-  fireDueRef = fireDue
-
-  function applySessionStatus(event: any): void {
-    const sid = event?.properties?.sessionID
-      || event?.properties?.info?.sessionID
-      || event?.properties?.info?.id
-    if (!sid) return
-    // Khi session vừa wakeup (idle), flush ngay outbox của nó.
-    const type = event?.type
-    if (type === "session.idle" || type === "session.next.prompted") {
-      sessionStatus.set(sid, "idle"); scheduleFlush(sid, client); return
-    }
-    if (type === "session.next.step.started") {
-      sessionStatus.set(sid, "busy"); return
-    }
-    if (type === "session.status") {
-      const raw = event?.properties?.status ?? event?.properties?.info?.status
-      const st = typeof raw === "string" ? raw : raw?.type
-      if (st === "idle") sessionStatus.set(sid, "idle")
-      else if (st === "busy" || st === "thinking" || st === "running") sessionStatus.set(sid, st)
-    }
-  }
+export const ReminderPlugin = async ({ client }: { client: any }) => {
+  _client = client
+  loadReminders()
+  if (reminders.size > 0) ensureRunning()
 
   return {
-    dispose: async () => {
-      // User exit: dừng clock. Outbox đã persist → mở lại sẽ resume.
-      if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
-      running = false
-      saveOutbox()
+    async dispose() {
+      stopClock()
     },
-    event: async ({ event }: any) => {
-      applySessionStatus(event)
-      const et = event?.type
+    event: async ({ event }: { event: any }) => {
       const sid = event?.properties?.sessionID
         || event?.properties?.info?.sessionID
         || event?.properties?.info?.id
-      if (et === "session.deleted" && sid) {
-        sessionStatus.delete(sid)
-        outbox.delete(sid)
-        saveOutbox()
-        const list = await load()
-        const filtered = list.filter((r) => r.sessionID !== sid)
-        if (filtered.length !== list.length) await save(filtered)
+      if (sid && typeof sid === "string" && sid.startsWith("ses_")) {
+        _sid = sid
+        loadReminders()
+        if (reminders.size > 0) ensureRunning()
       }
     },
-    tool: {
-      reminder_add: tool({
-        description: `Create a personal reminder that wakes THIS session when due (injects "⏰ Reminder: <text>"). SUPPORTS BOTH one-time AND repeating — e.g. when="in 30m" (once) or when="every 5m" / "daily 09:00" / "mon 09:00" (repeat automatically: no cron, no re-create). Repeating ones auto-advance each cycle; stop them with reminder_done / reminder_del. Use this tool directly — do NOT read plugin source. ${WHEN_HELP}`,
-        args: {
-          when: z.string().describe(`When to fire. ${WHEN_HELP}`),
-          text: z.string().describe("What to be reminded about."),
-        },
-        execute: async (args, context) => {
-          const now = Date.now()
-          const schedule = parseWhen(args.when, now)
-          if (schedule === undefined) {
-            return `Could not understand "${args.when}". ${WHEN_HELP}`
-          }
-          const list = await load()
-          const reminder: Reminder = {
-            id: makeId(),
-            text: args.text,
-            schedule,
-            nextAt: schedule.kind === "once" ? schedule.at : Date.now(),
-            sessionID: context.sessionID,
-            agent: context.agent,
-            createdAt: now,
-            done: false,
-          }
-          const first =
-            schedule.kind === "once"
-              ? reminder
-              : { ...reminder, ...advance(reminder, now - 1) }
-          list.push(first)
-          await save(list)
-          ensureRunning()
-          return `Added ${describeReminder(first, now)}`
-        },
-      }),
-
-      reminder_list: tool({
-        description: "List YOUR reminders for the current session (pending and completed).",
-        args: {
-          all: z.boolean().optional().describe("Include completed reminders (default false)."),
-          global: z.boolean().optional().describe("Show reminders of ALL sessions instead of just this session."),
-        },
-        execute: async (args, context) => {
-          const now = Date.now()
-          const list = await load()
-          const sid = context?.sessionID
-          const mine = (!args.global && sid) ? list.filter((r) => r.sessionID === sid) : list
-          const shown = args.all === true ? mine : mine.filter((r) => !r.done)
-          if (shown.length === 0) return "No reminders."
-          return shown.map((r) => describeReminder(r, now)).join("\n")
-        },
-      }),
-
-      reminder_done: tool({
-        description: "Mark a reminder as done so it stops firing.",
-        args: {
-          id: z.string().describe("Reminder id, e.g. r_k3f9a2."),
-        },
-        execute: async (args) => {
-          const list = await load()
-          const target = list.find((r) => r.id === args.id)
-          if (target === undefined) return `No reminder with id ${args.id}.`
-          const updated = list.map((r) => (r.id === args.id ? { ...r, done: true } : r))
-          await save(updated)
-          return `Marked ${args.id} as done.`
-        },
-      }),
-
-      reminder_del: tool({
-        description: "Delete a reminder permanently.",
-        args: {
-          id: z.string().describe("Reminder id, e.g. r_k3f9a2."),
-        },
-        execute: async (args) => {
-          const list = await load()
-          const exists = list.some((r) => r.id === args.id)
-          if (!exists) return `No reminder with id ${args.id}.`
-          await save(list.filter((r) => r.id !== args.id))
-          return `Deleted ${args.id}.`
-        },
-      }),
-    },
+    tool: tools,
   }
 }
