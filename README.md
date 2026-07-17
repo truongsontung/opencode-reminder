@@ -75,6 +75,10 @@ Clock quét mỗi **60 giây**. Khi tới giờ, nhắc được bơm vào sessi
 !ev remind 1: reminder <id> <label> @HH:MM GMT+7
 ```
 
+Giờ hiển thị theo **múi giờ thực tế của hệ thống** (qua `Intl.DateTimeFormat`,
+`timeZoneName: "shortOffset"`) — không hard-code. Ở VPS này là `GMT+7`, nhưng sẽ
+tự động là `GMT+9` nếu chạy ở Nhật, v.v.
+
 - Nhắc chưa `done` → tiếp tục bắn mỗi **5 phút** (`REMIND_INTERVAL_MS`) cho tới khi gọi
   `reminder_done` / `reminder_del`. Không tự xóa/dời → buộc đóng vòng để không bỏ lỡ.
 - Khi trễ: `reminder <id> <label> @HH:MM GMT+7 (trễ Xm) — gọi reminder_done xác nhận`
