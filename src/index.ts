@@ -7,7 +7,8 @@ tool.schema = z
 //  QUY TẮC TỰ VẬNHÀNH (AI + reminder) — đọc mỗi khi dùng tool:
 //  1. WORKLOG (file) là bộ nhớ, REMINDER chỉ là chuông. File: /tmp/opencode/work_log.md
 //  2. Gộp nhắc theo chức năng, KHÔNG 1 reminder/task. Task mới → cập nhật file ngay.
-//  3. Luôn có 1 heartbeat định kỳ ngắn giữ AI sống (không để vòng lặp chết).
+//  3. Không cần heartbeat cố định; reminder task đủ giữ AI sống. Chỉ khi không
+//     còn task nào → đặt 1 heartbeat every 1h. Đừng xóa hết reminder.
 //  4. Khi nhắc kêu: ĐỌC FILE → hành động → ghi lại. Xong → xóa khỏi theo dõi.
 //  5. Tự chủ: tự quyết việc thường lệ; chỉ hỏi user khi mâu thuẫn quy tắc /
 //     rủi ro không hoàn tác / thiếu thông tin cốt lõi không có trong file.
