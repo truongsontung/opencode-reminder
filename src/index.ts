@@ -132,6 +132,12 @@ function repeatLabel(ev: Reminder): string {
   const m = Math.round((ev.intervalMs || 0) / 60000)
   return m % 60 === 0 ? `every ${m / 60}h` : `every ${m}m`
 }
+function fmtTime(ms: number) {
+  const d = new Date(ms)
+  const h = (d.getUTCHours() + 7) % 24  // GMT+7
+  const m = d.getUTCMinutes().toString().padStart(2, "0")
+  return `${h}:${m} GMT+7`
+}
 function nextOccurrence(ev: Reminder, now: number): number {
   if (ev.repeat === "interval") {
     const step = ev.intervalMs || 60000
@@ -182,13 +188,13 @@ async function tick() {
     if (ev.due) {
       if (!ev.lastRemindAt || now - ev.lastRemindAt >= REMIND_INTERVAL_MS) {
         const late = Math.max(0, Math.round((now - (ev.dueAt || now)) / 60000))
-        pendingBatch.push(`reminder ${id} ${ev.label}${late ? ` (trễ ${late}m) — gọi reminder_done xác nhận` : ""}`)
+        pendingBatch.push(`reminder ${id} ${ev.label} @${fmtTime(ev.dueAt || ev.nextAt)}${late ? ` (trễ ${late}m) — gọi reminder_done xác nhận` : ""}`)
         ev.lastRemindAt = now
         trulyDue++
       }
     } else if (now >= ev.nextAt) {
       ev.due = true; ev.dueAt = ev.nextAt; ev.lastRemindAt = now
-      pendingBatch.push(`reminder ${id} ${ev.label}`)
+      pendingBatch.push(`reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)}`)
       trulyDue++
     } else if (ev.nextAt <= now + BATCH_WINDOW_MS) {
       near.push(ev)
@@ -198,7 +204,7 @@ async function tick() {
   if (trulyDue > 0) {
     for (const ev of near) {
       if (ev.lastRemindAt && now - ev.lastRemindAt < REMIND_INTERVAL_MS) continue
-      pendingBatch.push(`reminder ${ev.id} ${ev.label} (~${Math.max(1, Math.round((ev.nextAt - now) / 1000))}s)`)
+      pendingBatch.push(`reminder ${ev.id} ${ev.label} @${fmtTime(ev.nextAt)} (~${Math.max(1, Math.round((ev.nextAt - now) / 1000))}s)`)
       ev.lastRemindAt = now
     }
   }
