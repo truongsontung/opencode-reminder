@@ -1,18 +1,15 @@
 # opencode-reminders
 
-Bộ nhắc việc tự động lịch nhắc định kì: tích hợp plugin opencode, tạo lịch tự động nhắc việc trực tiếp vào inline prompt opencode, duy trình quá trình hoạt động độc lập của agent.
+Personal reminders for [opencode](https://github.com/anomalyco/opencode). Schedule a
+note and it wakes your session when it is due — the reminder is injected as a message
+into the exact session that created it.
+
+Plugin này được viết lại dựa trên cấu trúc `agent-teamwork-scheduler` (bỏ phần worker,
+chỉ giữ lịch nhắc), nên cơ chế hoạt động và format nhắc y hệt scheduler.
 
 ## Install
 
-Add the plugin to your opencode config:
-
-```json
-{
-  "plugin": ["opencode-reminders"]
-}
-```
-
-Or point at a local checkout during development:
+Thêm plugin vào opencode config (file `.ts` được load trực tiếp):
 
 ```json
 {
@@ -20,56 +17,87 @@ Or point at a local checkout during development:
 }
 ```
 
+Hoặc copy vào thư mục plugins và dùng tên:
+
+```sh
+cp /home/vps2/opencode-reminders/src/index.ts ~/.config/opencode/plugins/reminder.ts
+```
+
+```json
+{
+  "plugin": ["reminder"]
+}
+```
+
 ## Tools
 
-| Tool            | Purpose                                             |
-| --------------- | --------------------------------------------------- |
-| `reminder_add`  | Create a reminder (`when` + `text`).                |
-| `reminder_list` | List reminders (`all: true` to include completed).  |
-| `reminder_done` | Mark a reminder done so it stops firing.            |
-| `reminder_del`  | Delete a reminder permanently.                      |
+| Tool              | Purpose                                                      |
+| ----------------- | ------------------------------------------------------------ |
+| `reminder_add`    | Tạo nhắc (`when` + `label`).                                |
+| `reminder_list`   | Liệt kê nhắc (trạng thái: upcoming / chờ xác nhận).         |
+| `reminder_done`   | Xác nhận xong (one-time → xóa; lặp → dời kỳ kế).            |
+| `reminder_del`    | Xóa nhắc vĩnh viễn.                                         |
+| `reminder_start`  | Khởi chạy clock nhắc nếu chưa chạy.                         |
+| `reminder_verbose`| Bật/tắt log debug mỗi phút (`on`/`off`).                   |
 
-## Agent usage
+## Cách dùng (agent)
 
-When the user says "nhắc tôi…", "đặt báo…", "nhắc sau N phút/giờ/ngày", call
-`reminder_add` — **do NOT read this plugin's source to figure it out**.
+Khi user nói "nhắc tôi…", "đặt báo…", "nhắc sau N phút/giờ/ngày", gọi `reminder_add`
+— **không đọc source plugin để đoán**.
 
-- `reminder_add when="in 30m" text="nghỉ ngơi"` — remind in 30 minutes
-- `reminder_add when="daily 09:00" text="đọc báo"` — every day at 09:00
-- `reminder_add when="every 2h" text="uống nước"` — repeat every 2 hours
-- `reminder_list` — list this session's reminders
-- `reminder_done <id>` / `reminder_del <id>` — stop / delete
-
-On due time the plugin injects `⏰ Reminder: <text>` into the session and auto-stops
-(repeating ones advance to the next occurrence). Distinct from the scheduler `cal_*`
-tools (personal calendar tied to tasks, re-nags every 5m until `cal_done`/`cal_del`).
+- `reminder_add when="in 30m" label="nghỉ ngơi"` — nhắc sau 30 phút
+- `reminder_add when="daily 09:00" label="đọc báo"` — mỗi ngày 09:00
+- `reminder_add when="every 2h" label="uống nước"` — lặp mỗi 2 giờ
+- `reminder_add when="mon 09:00" label="họp"` — mỗi thứ 2 09:00
+- `reminder_list` — liệt kê nhắc của session
+- `reminder_start` — bật clock (tự chạy khi có nhắc / mở session)
+- `reminder_done <id>` / `reminder_del <id>` — dừng / xóa
 
 ## `when` syntax
 
-| Form           | Meaning                          | Repeats |
-| -------------- | -------------------------------- | ------- |
-| `in 2m`        | 2 minutes from now               | no      |
-| `in 1h30m`     | 1 hour 30 minutes from now       | no      |
-| `at 14:30`     | next time the clock hits 14:30   | no      |
-| `daily 09:00`  | every day at 09:00               | yes     |
-| `mon 09:00`    | every Monday at 09:00            | yes     |
-| `every 10m`    | every 10 minutes                 | yes     |
+| Form          | Ý nghĩa                              | Lặp  |
+| ------------- | ------------------------------------ | ---- |
+| `in 2m`       | 2 phút nữa                           | không|
+| `in 1h`       | 1 giờ nữa                            | không|
+| `14:30`       | lần tới 14:30                        | không|
+| `daily 09:00` | mỗi ngày 09:00                       | có  |
+| `mon 09:00`   | mỗi thứ 2 09:00                      | có  |
+| `every 90m`   | mỗi 90 phút                          | có  |
+| `every 2h`    | mỗi 2 giờ                            | có  |
 
-Duration units: `s`, `m`, `h`, `d` (combinable, e.g. `2h30m`).
+Đơn vị: `m` (phút), `h` (giờ). Chu kỳ lặp tối thiểu 1 phút.
 
-## How firing works
+## Cách nhắc bắn
 
-A background timer checks due reminders every 15 seconds. When one fires, it calls
-`session.promptAsync` against the **originating session** using the **agent captured at
-creation time** (`ToolContext.agent`) — never a hardcoded agent. Repeating reminders are
-rescheduled; one-shot reminders are marked done.
+Clock quét mỗi **60 giây**. Khi tới giờ, nhắc được bơm vào session dưới dạng:
 
-Reminders persist to `~/.local/share/opencode-reminders/reminders.json`.
+```
+!ev remind 1: reminder <id> <label> @HH:MM GMT+7
+```
+
+- Nhắc chưa `done` → tiếp tục bắn mỗi **5 phút** (`REMIND_INTERVAL_MS`) cho tới khi gọi
+  `reminder_done` / `reminder_del`. Không tự xóa/dời → buộc đóng vòng để không bỏ lỡ.
+- Khi trễ: `reminder <id> <label> @HH:MM GMT+7 (trễ Xm) — gọi reminder_done xác nhận`
+- Sắp đến (trong 1 phút): thêm `(~Ns)` vào cuối.
+- Nhiều nhắc cùng lúc được gộp: `!ev remind N: reminder A | reminder B | ...`
+
+Format và cơ chế hoàn toàn y hệt `agent-teamwork-scheduler` (chỉ đổi `cal` → `reminder`).
+
+## Persist & resume
+
+Mỗi session lưu riêng 1 file:
+
+```
+~/.local/share/opencode-reminders/<sessionID>.reminder.json
+```
+
+- JSON thuần: `{id, label, nextAt, repeat, hour, minute, dow?, intervalMs?, lastRemindAt?, due?, dueAt?}`
+- Clock ghi file mỗi phút → nếu session tắt rồi mở lại, nhắc tiếp tục (resume), không mất.
+- `life_monitor.py` đọc theo tên file (`<sessionID>.reminder.json`) để hiện nhắc đúng session.
 
 ## Develop
 
 ```sh
 bun install
-bun test
-bun run typecheck
+bun run typecheck   # tsc --noEmit
 ```
