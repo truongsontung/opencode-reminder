@@ -8,6 +8,17 @@ tool.schema = z
 //  Dùng tool() + tool.schema.string() y hệt scheduler.
 // ════════════════════════════════════════════════════════════════════════
 
+// ════════════════════════════════════════════════════════════════════════
+//  QUY TẮC TỰ VẬNHÀNH (AI + reminder) — đọc mỗi khi dùng tool:
+//  1. WORKLOG (file) là bộ nhớ, REMINDER chỉ là chuông. File: /tmp/opencode/work_log.md
+//  2. Gộp nhắc theo chức năng, KHÔNG 1 reminder/task. Task mới → cập nhật file ngay.
+//  3. Luôn có 1 heartbeat định kỳ ngắn giữ AI sống (không để vòng lặp chết).
+//  4. Khi nhắc kêu: ĐỌC FILE → hành động → ghi lại. Xong → xóa khỏi theo dõi.
+//  5. Tự chủ: tự quyết việc thường lệ; chỉ hỏi user khi mâu thuẫn quy tắc /
+//     rủi ro không hoàn tác / thiếu thông tin cốt lõi không có trong file.
+//  6. Chi tiết: /tmp/opencode/ai_autonomy_rules.md
+// ════════════════════════════════════════════════════════════════════════
+
 let _client: any = null
 
 const REMIND_INTERVAL_MS = 5 * 60 * 1000   // throttle nhắc thường
@@ -236,7 +247,7 @@ async function tick() {
 // ── Tools (y hệt style scheduler: tool() + tool.schema.string()) ──────────
 const tools = {
   reminder_add: tool({
-    description: 'Add reminder. when: HH:MM | in <N>m|h | daily HH:MM | <dow> HH:MM | every <N>m|h (any interval, 1.5h=90m).',
+    description: 'Add reminder. when: HH:MM | in <N>m|h | daily HH:MM | <dow> HH:MM | every <N>m|h (any interval, 1.5h=90m). QUY TẮC: file=/tmp/opencode/work_log.md là bộ nhớ, reminder chỉ là chuông. Gộp nhắc theo chức năng, không 1 reminder/task. Luôn có 1 heartbeat ngắn giữ AI sống. Đọc /tmp/opencode/ai_autonomy_rules.md.',
     args: { label: tool.schema.string(), when: tool.schema.string() },
     async execute(args: any) {
       if (ensureRunning()) push("!ev reminder ready")
@@ -250,7 +261,7 @@ const tools = {
   }),
 
   reminder_list: tool({
-    description: "Liệt kê tất cả nhắc (trạng thái: upcoming / chờ xác nhận).",
+    description: "Liệt kê tất cả nhắc (trạng thái: upcoming / chờ xác nhận). QUY TẮC: file=/tmp/opencode/work_log.md là bộ nhớ; gộp nhắc theo chức năng; luôn có heartbeat giữ AI sống. Chi tiết /tmp/opencode/ai_autonomy_rules.md.",
     args: {},
     async execute() {
       if (reminders.size === 0) return "(trống)"
@@ -265,7 +276,7 @@ const tools = {
   }),
 
   reminder_done: tool({
-    description: "Confirm reminder done (this occurrence), on !ev reminder due. One-time->deleted; repeat->next occurrence.",
+    description: "Confirm reminder done (this occurrence), on !ev reminder due. One-time->deleted; repeat->next occurrence. SAU KHI DONE: cập nhật /tmp/opencode/work_log.md (ghi kết quả / xóa task xong).",
     args: { id: tool.schema.string() },
     async execute(args: any) {
       const ev = reminders.get(args.id)
