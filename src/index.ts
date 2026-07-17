@@ -132,14 +132,17 @@ function repeatLabel(ev: Reminder): string {
 }
 function fmtTime(ms: number) {
   const d = new Date(ms)
-  // Lấy giờ local + mã timezone thực tế (vd "GMT+7", "GMT+9") từ hệ thống.
+  // Lấy ngày (YYYY-MM-DD) + giờ local + mã timezone thực tế (vd "GMT+7") từ hệ thống.
   const t = new Intl.DateTimeFormat("en-GB", {
+    year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit",
     timeZoneName: "shortOffset", hour12: false,
   }).formatToParts(d)
-  const hhmm = `${t.find(p => p.type === "hour")!.value}:${t.find(p => p.type === "minute")!.value}`
-  const tz = t.find(p => p.type === "timeZoneName")!.value
-  return `${hhmm} ${tz}`
+  const get = (type: string) => t.find(p => p.type === type)!.value
+  const date = `${get("year")}-${get("month")}-${get("day")}`
+  const hhmm = `${get("hour")}:${get("minute")}`
+  const tz = get("timeZoneName")
+  return `${date} ${hhmm} ${tz}`
 }
 function nextOccurrence(ev: Reminder, now: number): number {
   if (ev.repeat === "interval") {
@@ -256,7 +259,7 @@ const tools = {
       return [...reminders.values()].map(ev => {
         const st = ev.due
           ? `🔔 chờ xác nhận (trễ ${Math.max(0, Math.round((now - (ev.dueAt || now)) / 60000))}m)`
-          : `⏰ ${new Date(ev.nextAt).toTimeString().slice(0, 5)}`
+          : `⏰ ${fmtTime(ev.nextAt)}`
         return `${ev.id} ${st} [${repeatLabel(ev)}] ${ev.label}`
       }).join("\n")
     },
