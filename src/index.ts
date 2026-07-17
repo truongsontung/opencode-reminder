@@ -4,17 +4,7 @@ tool.schema = z
 
 // ════════════════════════════════════════════════════════════════════════
 //  reminder plugin — bộ nhắc cá nhân, lưu per-session <sid>.reminder.json.
-//  QUY TẮC TỰ VẬNHÀNH (AI + reminder) — đọc mỗi khi dùng tool:
-//  1. WORKLOG (file) là bộ nhớ, REMINDER chỉ là chuông. File: ~/agent_make_money/work_log.md
-//  2. Gộp nhắc theo chức năng, KHÔNG 1 reminder/task. Task mới → cập nhật file ngay.
-//  3. Không cần heartbeat cố định; reminder task đủ giữ AI sống. Chỉ khi không
-//     còn task nào → đặt 1 heartbeat every 1h. Đừng xóa hết reminder.
-//  4. Khi nhắc kêu: ĐỌC FILE → hành động → ghi lại. Xong → xóa khỏi theo dõi.
-//  5. Tự chủ: tự quyết việc thường lệ; chỉ hỏi user khi mâu thuẫn quy tắc /
-//     rủi ro không hoàn tác / thiếu thông tin cốt lõi không có trong file.
-//  6. Chi tiết: /tmp/opencode/ai_autonomy_rules.md
 // ════════════════════════════════════════════════════════════════════════
-
 
 let _client: any = null
 
@@ -244,7 +234,7 @@ async function tick() {
 // ── Tools (y hệt style scheduler: tool() + tool.schema.string()) ──────────
 const tools = {
   reminder_add: tool({
-    description: 'Add reminder. when: HH:MM | in <N>m|h | daily HH:MM | <dow> HH:MM | every <N>m|h (any interval, 1.5h=90m). QUY TẮC: file=~/agent_make_money/work_log.md là bộ nhớ, reminder chỉ là chuông. Gộp nhắc theo chức năng, không 1 reminder/task. Luôn có 1 heartbeat ngắn giữ AI sống. Đọc ~/agent_make_money/ai_autonomy_rules.md.',
+    description: 'Add reminder. when: HH:MM | in <N>m|h | daily HH:MM | <dow> HH:MM | every <N>m|h (any interval, 1.5h=90m).',
     args: { label: tool.schema.string(), when: tool.schema.string() },
     async execute(args: any) {
       if (ensureRunning()) push("!ev reminder ready")
@@ -258,7 +248,7 @@ const tools = {
   }),
 
   reminder_list: tool({
-    description: "Liệt kê tất cả nhắc (trạng thái: upcoming / chờ xác nhận). QUY TẮC: file=~/agent_make_money/work_log.md là bộ nhớ; gộp nhắc theo chức năng; luôn có heartbeat giữ AI sống. Chi tiết ~/agent_make_money/ai_autonomy_rules.md.",
+    description: "Liệt kê tất cả nhắc (trạng thái: upcoming / chờ xác nhận).",
     args: {},
     async execute() {
       if (reminders.size === 0) return "(trống)"
@@ -273,7 +263,7 @@ const tools = {
   }),
 
   reminder_done: tool({
-    description: "Confirm reminder done (this occurrence), on !ev reminder due. One-time->deleted; repeat->next occurrence. SAU KHI DONE: cập nhật /tmp/opencode/work_log.md (ghi kết quả / xóa task xong).",
+    description: "Confirm reminder done (this occurrence), on !ev reminder due. One-time->deleted; repeat->next occurrence.",
     args: { id: tool.schema.string() },
     async execute(args: any) {
       const ev = reminders.get(args.id)
