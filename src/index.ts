@@ -3,12 +3,7 @@ function tool(def: any) { return def }
 tool.schema = z
 
 // ════════════════════════════════════════════════════════════════════════
-//  reminder.ts  —  bộ nhắc cá nhân (copy cấu trúc agent-teamwork-scheduler,
-//  bỏ phần worker, chỉ giữ lịch nhắc). Lưu per-session <sid>.reminder.json.
-//  Dùng tool() + tool.schema.string() y hệt scheduler.
-// ════════════════════════════════════════════════════════════════════════
-
-// ════════════════════════════════════════════════════════════════════════
+//  reminder plugin — bộ nhắc cá nhân, lưu per-session <sid>.reminder.json.
 //  QUY TẮC TỰ VẬNHÀNH (AI + reminder) — đọc mỗi khi dùng tool:
 //  1. WORKLOG (file) là bộ nhớ, REMINDER chỉ là chuông. File: /tmp/opencode/work_log.md
 //  2. Gộp nhắc theo chức năng, KHÔNG 1 reminder/task. Task mới → cập nhật file ngay.
@@ -18,6 +13,7 @@ tool.schema = z
 //     rủi ro không hoàn tác / thiếu thông tin cốt lõi không có trong file.
 //  6. Chi tiết: /tmp/opencode/ai_autonomy_rules.md
 // ════════════════════════════════════════════════════════════════════════
+
 
 let _client: any = null
 
