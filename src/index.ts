@@ -134,9 +134,14 @@ function repeatLabel(ev: Reminder): string {
 }
 function fmtTime(ms: number) {
   const d = new Date(ms)
-  const h = (d.getUTCHours() + 7) % 24  // GMT+7
-  const m = d.getUTCMinutes().toString().padStart(2, "0")
-  return `${h}:${m} GMT+7`
+  // Lấy giờ local + mã timezone thực tế (vd "GMT+7", "GMT+9") từ hệ thống.
+  const t = new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit", minute: "2-digit",
+    timeZoneName: "shortOffset", hour12: false,
+  }).formatToParts(d)
+  const hhmm = `${t.find(p => p.type === "hour")!.value}:${t.find(p => p.type === "minute")!.value}`
+  const tz = t.find(p => p.type === "timeZoneName")!.value
+  return `${hhmm} ${tz}`
 }
 function nextOccurrence(ev: Reminder, now: number): number {
   if (ev.repeat === "interval") {
