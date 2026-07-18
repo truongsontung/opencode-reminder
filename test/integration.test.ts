@@ -57,7 +57,7 @@ function tick(ms: number): Promise<void> {
 describe("end-to-end plugin flow", () => {
   test("add -> list -> fire with dynamic agent -> reschedule/complete", async () => {
     const add = await tools.reminder_add!.execute(
-      { when: "in 1s", text: "check deploy" },
+      { when: "in 1s", label: "check deploy" },
       ctx as never,
     )
     expect(String(add)).toContain("check deploy")
@@ -82,16 +82,16 @@ describe("end-to-end plugin flow", () => {
 
   test("reject invalid when", async () => {
     const res = await tools.reminder_add!.execute(
-      { when: "whenever", text: "nope" },
+      { when: "whenever", label: "nope" },
       ctx as never,
     )
-    expect(String(res)).toContain("Could not understand")
+    expect(String(res)).toContain("định dạng thời gian không hợp lệ")
   })
 
   test("fires into correct session even when hidden (no status event seen)", async () => {
     const hiddenSid = "ses_hidden"
     const add = await tools.reminder_add!.execute(
-      { when: "in 1s", text: "hidden task" },
+      { when: "in 1s", label: "hidden task" },
       { ...ctx, sessionID: hiddenSid, agent: "build" } as never,
     )
     expect(String(add)).toContain("hidden task")
@@ -109,7 +109,7 @@ describe("end-to-end plugin flow", () => {
     const brokenClient = { session: null }
     const hooks2 = await ReminderPlugin({ client: brokenClient } as any)
     await hooks2.tool!.reminder_add!.execute(
-      { when: "in 1s", text: "resume me" },
+      { when: "in 1s", label: "resume me" },
       { ...ctx, sessionID: resumeSid, agent: "plan" } as never,
     )
     await tick(1200) // due + scan, nhưng promptAsync fail → giữ outbox + persist
@@ -150,11 +150,39 @@ describe("end-to-end plugin flow", () => {
     }
     const hooks4 = await ReminderPlugin({ client: flakyClient } as any)
     await hooks4.tool!.reminder_add!.execute(
-      { when: "in 1s", text: "flaky" },
+      { when: "in 1s", label: "flaky" },
       { ...ctx, agent: "plan" } as never,
     )
     await tick(1600) // lần 1 fail, scan tick kế tiếp (50ms) retry thành công
     expect(callsR.find((c) => c.text.includes("flaky"))).toBeDefined()
     await hooks4.dispose?.()
+  })
+
+  test("add with explicit id keeps that id (update not create new)", async () => {
+    const hooks5 = await ReminderPlugin({ client: fakeClient } as any)
+    const add1 = await hooks5.tool!.reminder_add!.execute(
+      { when: "every 2h", label: "original r-4", id: "r-testid" },
+      { ...ctx, agent: "plan" } as never,
+    )
+    expect(String(add1)).toContain("r-testid")
+    expect(String(add1)).toContain("created")
+    let list = await hooks5.tool!.reminder_list!.execute({}, ctx as never)
+    expect(String(list)).toContain("r-testid")
+
+    // Update cùng id → phải update tại chỗ, KHÔNG tạo id mới.
+    const add2 = await hooks5.tool!.reminder_add!.execute(
+      { when: "every 2h", label: "updated r-testid", id: "r-testid" },
+      { ...ctx, agent: "plan" } as never,
+    )
+    expect(String(add2)).toContain("r-testid")
+    expect(String(add2)).toContain("updated")
+
+    list = await hooks5.tool!.reminder_list!.execute({}, ctx as never)
+    expect(String(list)).toContain("updated r-testid")
+    expect(String(list)).not.toContain("original r-testid")
+    // đảm bảo chỉ có đúng 1 dòng chứa r-testid
+    const matches = String(list).split("\n").filter((l) => l.includes("r-testid"))
+    expect(matches.length).toBe(1)
+    await hooks5.dispose?.()
   })
 })

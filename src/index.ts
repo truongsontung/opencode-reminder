@@ -37,6 +37,8 @@ function loadReminders() {
     for (const ev of (data || [])) {
       if (ev.repeat !== "none" && ev.nextAt <= now && !ev.due) ev.nextAt = nextOccurrence(ev, now)
       reminders.set(ev.id, ev)
+      const m = /^r-(\d+)$/.exec(ev.id)
+      if (m) seq = Math.max(seq, parseInt(m[1]!, 10))
     }
   } catch {}
 }
@@ -87,10 +89,11 @@ function parseWhen(when: string, now: number): Reminder {
   if (tokens[i] === "daily") { repeat = "daily"; i++ }
   else if (tokens[i] === "weekly") { repeat = "weekly"; i++ }
   if (tokens[i]?.toLowerCase() === "in") {
-    const rel = (tokens[i + 1] ?? "").match(/^(\d+)(m|h)$/i)
+    const rel = (tokens[i + 1] ?? "").match(/^(\d+)(m|h|s)$/i)
     if (rel) {
       const n = parseInt(rel[1]!)
-      const ms = rel[2]!.toLowerCase() === "h" ? n * 3600000 : n * 60000
+      const unit = rel[2]!.toLowerCase()
+      const ms = unit === "h" ? n * 3600000 : unit === "m" ? n * 60000 : n * 1000
       return { id: "", label: "", nextAt: now + ms, repeat: "none", hour: 0, minute: 0 }
     }
     throw new Error("định dạng thời gian không hợp lệ. VD: 14:30 | daily 09:00 | in 30m")
@@ -135,14 +138,16 @@ function fmtTime(ms: number) {
   // Lấy ngày (YYYY-MM-DD) + giờ local + mã timezone thực tế (vd "GMT+7") từ hệ thống.
   const t = new Intl.DateTimeFormat("en-GB", {
     year: "numeric", month: "2-digit", day: "2-digit",
+    weekday: "short",
     hour: "2-digit", minute: "2-digit",
     timeZoneName: "shortOffset", hour12: false,
   }).formatToParts(d)
   const get = (type: string) => t.find(p => p.type === type)!.value
   const date = `${get("year")}-${get("month")}-${get("day")}`
+  const dow = get("weekday")
   const hhmm = `${get("hour")}:${get("minute")}`
   const tz = get("timeZoneName")
-  return `${date} ${hhmm} ${tz}`
+  return `${date} ${dow} ${hhmm} ${tz}`
 }
 function nextOccurrence(ev: Reminder, now: number): number {
   if (ev.repeat === "interval") {
@@ -167,6 +172,10 @@ function nextOccurrence(ev: Reminder, now: number): number {
 }
 
 // ── Clock loop (mỗi phút, copy nguyên scheduler) ─────────────────────────
+const TICK_MS = (() => {
+  const v = parseInt(process.env.OPENCODE_REMINDERS_TICK_MS || "", 10)
+  return Number.isFinite(v) && v > 0 ? v : 60_000
+})()
 function startClock() {
   if (clockTimer) return
   scheduleNext()
@@ -178,7 +187,7 @@ function scheduleNext() {
     } finally {
       scheduleNext()
     }
-  }, 60_000)
+  }, TICK_MS)
 }
 function stopClock() {
   if (clockTimer) { clearTimeout(clockTimer); clockTimer = null }
@@ -237,16 +246,50 @@ async function tick() {
 // ── Tools (y hệt style scheduler: tool() + tool.schema.string()) ──────────
 const tools = {
   reminder_add: tool({
-    description: 'Add reminder. when: HH:MM | in <N>m|h | daily HH:MM | <dow> HH:MM | every <N>m|h (any interval, 1.5h=90m).',
-    args: { label: tool.schema.string(), when: tool.schema.string() },
+    description: 'Add or update a reminder. when: HH:MM | in <N>m|h|s | daily HH:MM | <dow> HH:MM | every <N>m|h (any interval, 1.5h=90m). Optional `id`: if given, the reminder is created/updated UNDER THAT EXACT ID (never auto-renamed). If the id already exists -> update its label/when in place (no new reminder); if it does not exist yet -> create it with that id. Use this to keep stable ids like "r-4" across edits.',
+    args: {
+      label: tool.schema.string(),
+      when: tool.schema.string(),
+      id: tool.schema.string({ required: false }),
+    },
     async execute(args: any) {
       if (ensureRunning()) push("!ev reminder ready")
-      const ev = parseWhen(args.when, Date.now())
-      ev.id = `r-${++seq}`
-      ev.label = args.label
-      reminders.set(ev.id, ev)
+      if (!args || typeof args.when !== "string") {
+        return "! lỗi: thiếu tham số `when` (VD: 14:30 | in 30m | daily 09:00 | every 2h)"
+      }
+      const id = args.id
+      let parsed
+      try {
+        parsed = parseWhen(args.when, Date.now())
+      } catch (e: any) {
+        return `! lỗi: ${e?.message || e}`
+      }
+      if (id) {
+        // Giữ nguyên id do người dùng truyền (dù đã tồn tại hay chưa).
+        const existed = reminders.has(id)
+        const ev = reminders.get(id) || parsed
+        ev.id = id
+        ev.label = args.label
+        ev.repeat = parsed.repeat
+        ev.hour = parsed.hour
+        ev.minute = parsed.minute
+        ev.dow = parsed.dow
+        ev.intervalMs = parsed.intervalMs
+        ev.nextAt = parsed.nextAt
+        ev.due = false
+        ev.dueAt = undefined
+        reminders.set(id, ev)
+        // Giữ seq luôn lớn hơn mọi id dạng r-N để không trùng ID tự sinh.
+        const m = /^r-(\d+)$/.exec(id)
+        if (m) seq = Math.max(seq, parseInt(m[1]!, 10))
+        saveReminders()
+        return `${existed ? "~" : "+"}${id} ${existed ? "updated" : "created"} → ${new Date(ev.nextAt).toTimeString().slice(0, 5)} [${repeatLabel(ev)}] ${ev.label}`
+      }
+      parsed.id = `r-${++seq}`
+      parsed.label = args.label
+      reminders.set(parsed.id, parsed)
       saveReminders()
-      return `+${ev.id} ${new Date(ev.nextAt).toTimeString().slice(0, 5)} [${repeatLabel(ev)}] ${ev.label}`
+      return `+${parsed.id} ${new Date(parsed.nextAt).toTimeString().slice(0, 5)} [${repeatLabel(parsed)}] ${parsed.label}`
     },
   }),
 
