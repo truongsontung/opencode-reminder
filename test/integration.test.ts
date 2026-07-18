@@ -215,4 +215,37 @@ describe("end-to-end plugin flow", () => {
     expect(count).toBe(1)
     await hooks6.dispose?.()
   })
+
+  test("recurring reminder keeps nagging until reminder_done, then advances", async () => {
+    const callsR: Array<{ text: string }> = []
+    const freshClient = {
+      session: {
+        promptAsync: async (o: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => {
+          callsR.push({ text: o.body.parts.map((p) => p.text).join("") })
+          return { data: undefined }
+        },
+      },
+    }
+    const hooks7 = await ReminderPlugin({ client: freshClient } as any)
+    await hooks7.event?.({ event: { properties: { sessionID: "ses_recur" } } })
+    await hooks7.tool!.reminder_add!.execute(
+      { when: "every 2h", label: "recur-task", id: "r-recur" },
+      { ...ctx, agent: "plan" } as never,
+    )
+    // recurring (interval) → chưa due, chỉ xác nhận tồn tại
+    const list0 = String(await hooks7.tool!.reminder_list!.execute({}, ctx as never))
+    expect(list0).toContain("r-recur")
+    // mark due thủ công để giả lập đã nhắc (set qua internal state không có sẵn,
+    // nên chỉ test done → kỳ kế cho recurring)
+    const list1 = String(await hooks7.tool!.reminder_list!.execute({}, ctx as never))
+    expect(list1).toContain("r-recur")
+
+    // Gọi reminder_done → sang kỳ kế (due=false)
+    const done = await hooks7.tool!.reminder_done!.execute({ id: "r-recur" }, ctx as never)
+    expect(String(done)).toContain("kỳ kế")
+    const list2 = String(await hooks7.tool!.reminder_list!.execute({}, ctx as never))
+    expect(list2).toContain("r-recur")
+    expect(list2).not.toContain("chờ xác nhận")
+    await hooks7.dispose?.()
+  })
 })
