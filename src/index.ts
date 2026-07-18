@@ -64,18 +64,18 @@ let pendingBatch: string[] = []
 let verbose = false
 
 let pushQueue: Promise<void> = Promise.resolve()
-async function push(msg: string, sid?: string) {
+async function push(msg: string, sid?: string): Promise<boolean> {
   const target = sid || _sid
-  if (!target || !_client?.session?.promptAsync) return
-  pushQueue = pushQueue
-    .then(async () => {
-      await _client.session.promptAsync({
-        path: { id: target },
-        body: { parts: [{ type: "text", text: msg }] },
-      })
+  if (!target || !_client?.session?.promptAsync) return false
+  try {
+    await _client.session.promptAsync({
+      path: { id: target },
+      body: { parts: [{ type: "text", text: msg }] },
     })
-    .catch(() => {})
-  await pushQueue
+    return true
+  } catch {
+    return false
+  }
 }
 
 let _sid: string | undefined
@@ -198,18 +198,20 @@ async function tick() {
   pendingBatch = []
   const near: Reminder[] = []
   let trulyDue = 0
+  // Collect (ev, text) pairs to remind; only mark lastRemindAt AFTER a
+  // successful push so a busy/failing agent doesn't silently swallow reminders.
+  const toRemind: Array<{ ev: Reminder; text: string }> = []
 
   for (const [id, ev] of reminders) {
     if (ev.due) {
       if (!ev.lastRemindAt || now - ev.lastRemindAt >= REMIND_INTERVAL_MS) {
         const late = Math.max(0, Math.round((now - (ev.dueAt || now)) / 60000))
-        pendingBatch.push(`reminder ${id} ${ev.label} @${fmtTime(ev.dueAt || ev.nextAt)}${late ? ` (trễ ${late}m) — gọi reminder_done xác nhận` : ""}`)
-        ev.lastRemindAt = now
+        toRemind.push({ ev, text: `reminder ${id} ${ev.label} @${fmtTime(ev.dueAt || ev.nextAt)}${late ? ` (trễ ${late}m) — gọi reminder_done xác nhận` : ""}` })
         trulyDue++
       }
     } else if (now >= ev.nextAt) {
-      ev.due = true; ev.dueAt = ev.nextAt; ev.lastRemindAt = now
-      pendingBatch.push(`reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)}`)
+      ev.due = true; ev.dueAt = ev.nextAt
+      toRemind.push({ ev, text: `reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)}` })
       trulyDue++
     } else if (ev.nextAt <= now + BATCH_WINDOW_MS) {
       near.push(ev)
@@ -219,13 +221,16 @@ async function tick() {
   if (trulyDue > 0) {
     for (const ev of near) {
       if (ev.lastRemindAt && now - ev.lastRemindAt < REMIND_INTERVAL_MS) continue
-      pendingBatch.push(`reminder ${ev.id} ${ev.label} @${fmtTime(ev.nextAt)} (~${Math.max(1, Math.round((ev.nextAt - now) / 1000))}s)`)
-      ev.lastRemindAt = now
+      toRemind.push({ ev, text: `reminder ${ev.id} ${ev.label} @${fmtTime(ev.nextAt)} (~${Math.max(1, Math.round((ev.nextAt - now) / 1000))}s)` })
     }
   }
 
-  if (pendingBatch.length) {
-    await push(`!ev remind ${pendingBatch.length}: ` + pendingBatch.join(" | "))
+  for (const { ev, text } of toRemind) {
+    pendingBatch.push(text)
+    const ok = await push(`!ev remind ${pendingBatch.length}: ` + text)
+    if (ok) ev.lastRemindAt = now
+    // if push failed (agent busy/thinking), leave lastRemindAt untouched so
+    // the next tick retries this reminder instead of dropping it.
   }
 
   if (verbose) {

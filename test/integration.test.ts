@@ -185,4 +185,34 @@ describe("end-to-end plugin flow", () => {
     expect(matches.length).toBe(1)
     await hooks5.dispose?.()
   })
+
+  test("failed push does NOT drop the reminder (retries next tick)", async () => {
+    const callsF: Array<{ text: string }> = []
+    let failOnce = true
+    const flakyClient = {
+      session: {
+        promptAsync: async (o: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => {
+          if (failOnce) { failOnce = false; throw new Error("agent busy") }
+          callsF.push({ text: o.body.parts.map((p) => p.text).join("") })
+          return { data: undefined }
+        },
+      },
+    }
+    const hooks6 = await ReminderPlugin({ client: flakyClient } as any)
+    // kích hoạt session để push có _sid (plugin set _sid qua event handler)
+    await hooks6.event?.({ event: { properties: { sessionID: "ses_retry" } } })
+    await hooks6.tool!.reminder_add!.execute(
+      { when: "in 1s", label: "must-survive", id: "r-retry" },
+      { ...ctx, agent: "plan" } as never,
+    )
+    // Đủ thời gian để reminder due (1s) + qua ít nhất 2 tick (mỗi 50ms).
+    // Tick đầu push fail (failOnce) → reminder KHÔNG bị drop, thử lại tick sau → ok.
+    await new Promise((r) => setTimeout(r, 1500))
+    const delivered = callsF.find((c) => c.text.includes("must-survive"))
+    expect(delivered).toBeDefined()
+    // Chỉ đúng 1 lần delivered (không bị duplicate do lastRemindAt bug cũ)
+    const count = callsF.filter((c) => c.text.includes("must-survive")).length
+    expect(count).toBe(1)
+    await hooks6.dispose?.()
+  })
 })
