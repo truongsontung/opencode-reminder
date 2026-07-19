@@ -262,12 +262,17 @@ async function tick() {
 
 async function nag() {
   let pushed = 0
+  _inTick = true
 
-  for (const [id, ev] of reminders) {
-    if (ev.state === "overdue") {
-      const ok = await push(`!ev resum: reminder ${id} ${ev.label} — gọi reminder_done`)
-      if (ok) pushed++
+  try {
+    for (const [id, ev] of reminders) {
+      if (ev.state === "overdue") {
+        const ok = await push(`!ev resum: reminder ${id} ${ev.label} — gọi reminder_done`)
+        if (ok) pushed++
+      }
     }
+  } finally {
+    _inTick = false
   }
 
   if (verbose && pushed > 0) {
