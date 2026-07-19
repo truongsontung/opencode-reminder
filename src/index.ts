@@ -175,8 +175,12 @@ function nextOccurrence(ev: Reminder, now: number): number {
   if (ev.repeat === "weekly") {
     const d = new Date(now); d.setSeconds(0, 0); d.setMilliseconds(0)
     let guard = 0
-    while (d.getDay() !== ev.dow && guard < 8) { d.setDate(d.getDate() + 1); guard++ }
-    d.setHours(ev.hour, ev.minute, 0, 0)
+    while (true) {
+      d.setHours(ev.hour, ev.minute, 0, 0)
+      if (d.getTime() > now && d.getDay() === ev.dow) return d.getTime()
+      d.setDate(d.getDate() + 1)
+      if (++guard > 8) break
+    }
     return d.getTime()
   }
   return ev.nextAt
