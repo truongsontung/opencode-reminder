@@ -190,14 +190,11 @@ function nextOccurrence(ev: Reminder, now: number): number {
 
 function scheduleStates() {
   const now = Date.now()
-  let changed = false
   for (const ev of reminders.values()) {
     if (ev.state === "idle" && now >= ev.nextAt) {
       ev.state = "due"
-      changed = true
     }
   }
-  if (changed) saveReminders()
 }
 
 // ── Tick + Nag ──────────────────────────────────────────────────────────
