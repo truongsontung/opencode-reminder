@@ -229,6 +229,7 @@ function ensureRunning(): boolean {
 
 async function tick() {
   scheduleStates()
+  saveReminders()
   const now = Date.now()
   let pushed = 0
 
