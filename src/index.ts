@@ -237,6 +237,7 @@ async function tick() {
       const ok = await push(`!ev remind: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)} — gọi reminder_done`)
       if (ok) {
         ev.state = "overdue"
+        saveReminders()
         pushed++
       }
     }
@@ -250,8 +251,6 @@ async function tick() {
     }
     await push(lines.join("\n"))
   }
-
-  saveReminders()
 }
 
 async function nag() {
