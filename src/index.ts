@@ -22,6 +22,7 @@ interface Reminder {
   id: string
   label: string
   nextAt: number
+  startAt: number          // T0 — thời điểm tạo, gốc tính chu kỳ
   repeat: "none" | "daily" | "weekly" | "interval"
   hour: number
   minute: number
@@ -62,6 +63,7 @@ function loadReminders() {
     const data = JSON.parse(fs.readFileSync(f, "utf8"))
     for (const ev of (data || [])) {
       if (!ev.state) ev.state = "idle"
+      if (!ev.startAt) ev.startAt = ev.nextAt
       reminders.set(ev.id, ev)
       const m = /^r-(\d+)$/.exec(ev.id)
       if (m) seq = Math.max(seq, parseInt(m[1]!, 10))
@@ -101,7 +103,7 @@ function parseWhen(when: string, now: number): Reminder {
       const n = parseInt(rel[1]!)
       const unit = rel[2]!.toLowerCase()
       const ms = unit === "h" ? n * 3600000 : unit === "m" ? n * 60000 : n * 1000
-      return { id: "", label: "", nextAt: now + ms, repeat: "none", hour: 0, minute: 0, state: "idle" }
+      return { id: "", label: "", nextAt: now + ms, startAt: now + ms, repeat: "none", hour: 0, minute: 0, state: "idle" }
     }
     throw new Error("định dạng thời gian không hợp lệ. VD: 14:30 | daily 09:00 | in 30m")
   }
@@ -111,7 +113,7 @@ function parseWhen(when: string, now: number): Reminder {
       const n = parseInt(rel[1]!)
       const ms = rel[2]!.toLowerCase() === "h" ? n * 3600000 : n * 60000
       if (ms < 60000) throw new Error("chu kỳ lặp tối thiểu 1 phút")
-      return { id: "", label: "", nextAt: now + ms, repeat: "interval", intervalMs: ms, hour: 0, minute: 0, state: "idle" }
+      return { id: "", label: "", nextAt: now + ms, startAt: now + ms, repeat: "interval", intervalMs: ms, hour: 0, minute: 0, state: "idle" }
     }
     throw new Error("định dạng chu kỳ không hợp lệ. VD: every 90m | every 30m | every 2h")
   }
@@ -133,7 +135,7 @@ function parseWhen(when: string, now: number): Reminder {
   } else {
     if (d.getTime() <= now) d.setDate(d.getDate() + 1)
   }
-  return { id: "", label: "", nextAt: d.getTime(), repeat, hour, minute, dow, state: "idle" }
+  return { id: "", label: "", nextAt: d.getTime(), startAt: d.getTime(), repeat, hour, minute, dow, state: "idle" }
 }
 
 function repeatLabel(ev: Reminder): string {
@@ -161,9 +163,9 @@ function fmtTime(ms: number) {
 function nextOccurrence(ev: Reminder, now: number): number {
   if (ev.repeat === "interval") {
     const step = ev.intervalMs || 60000
-    let n = now + step
-    while (n <= now) n += step
-    return n
+    const elapsed = now - ev.startAt
+    const n = Math.floor(elapsed / step) + 1
+    return ev.startAt + n * step
   }
   if (ev.repeat === "daily") {
     const d = new Date(now); d.setSeconds(0, 0); d.setMilliseconds(0); d.setHours(ev.hour, ev.minute, 0, 0)
@@ -299,6 +301,7 @@ const tools = {
         ev.dow = parsed.dow
         ev.intervalMs = parsed.intervalMs
         ev.nextAt = parsed.nextAt
+        ev.startAt = parsed.startAt
         ev.state = "idle"
         reminders.set(id, ev)
         const m = /^r-(\d+)$/.exec(id)
