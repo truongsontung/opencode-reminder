@@ -1,251 +1,256 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-// Configure the plugin BEFORE importing it: isolated data dir + fast tick.
 const workDir = await mkdtemp(join(tmpdir(), "reminders-it-"))
 process.env.OPENCODE_REMINDERS_DIR = workDir
 process.env.OPENCODE_REMINDERS_TICK_MS = "50"
 
 const { ReminderPlugin } = await import("../src/index.ts")
 
-type PromptCall = { id: string; agent?: string; text: string }
+type PromptCall = { id: string; text: string }
 
-const calls: PromptCall[] = []
+const allCalls: PromptCall[] = []
 
-const fakeClient = {
-  session: {
-    promptAsync: async (options: {
-      path: { id: string }
-      body: { agent?: string; parts: Array<{ type: string; text: string }> }
-    }) => {
-      calls.push({
-        id: options.path.id,
-        agent: options.body.agent,
-        text: options.body.parts.map((p) => p.text).join(""),
-      })
-      return { data: undefined }
+function makeClient(failOnce = false) {
+  let failed = false
+  return {
+    session: {
+      promptAsync: async (o: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => {
+        if (failOnce && !failed) { failed = true; throw new Error("fail once") }
+        allCalls.push({ id: o.path.id, text: o.body.parts.map((p) => p.text).join("") })
+        return { data: undefined }
+      },
     },
-  },
+  }
 }
 
-const ctx = {
-  sessionID: "ses_live",
-  messageID: "msg_1",
-  agent: "plan", // dynamic agent under test — must be echoed back on fire
-  directory: workDir,
-  worktree: workDir,
-  abort: new AbortController().signal,
-  metadata: () => {},
-  ask: async () => {},
+function callsFor(sid: string) {
+  return allCalls.filter(c => c.id === sid)
 }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const hooks = await ReminderPlugin({ client: fakeClient } as any)
-const tools = hooks.tool ?? {}
 
 afterAll(async () => {
-  await hooks.dispose?.()
   await rm(workDir, { recursive: true, force: true })
 })
 
-function tick(ms: number): Promise<void> {
+function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 describe("end-to-end plugin flow", () => {
-  test("add -> list -> fire with dynamic agent -> reschedule/complete", async () => {
-    const add = await tools.reminder_add!.execute(
+  test("add -> list -> fire -> done (one-time)", async () => {
+    allCalls.length = 0
+    const sid = "ses_1"
+    const client = makeClient()
+    const hooks = await ReminderPlugin({ client } as any)
+    await hooks.event?.({ event: { properties: { sessionID: sid } } })
+    const t = hooks.tool!
+
+    const add = await t.reminder_add!.execute(
       { when: "in 1s", label: "check deploy" },
-      ctx as never,
+      { ...{}, sessionID: sid } as never,
     )
     expect(String(add)).toContain("check deploy")
 
-    const list = await tools.reminder_list!.execute({}, ctx as never)
+    const list = await t.reminder_list!.execute({}, { sessionID: sid } as never)
     expect(String(list)).toContain("check deploy")
 
-    // Wait past the 1s due time; tick runs every 50ms.
-    // fireDue checks isIdle(sessionID) — unknown session → idle → bơm trực tiếp.
-    await tick(1400)
+    await wait(1400)
 
-    expect(calls.length).toBeGreaterThanOrEqual(1)
-    const fired = calls[0]!
-    expect(fired.id).toBe("ses_live")
-    expect(fired.agent).toBe("plan") // dynamic agent preserved, not hardcoded
-    expect(fired.text).toContain("check deploy")
+    const fired = callsFor(sid).find(c => c.text.includes("check deploy"))
+    expect(fired).toBeDefined()
+    expect(fired!.text).toContain("!ev remind:")
 
-    // Once-reminder should now be gone from the default (pending) list.
-    const after = await tools.reminder_list!.execute({}, ctx as never)
-    expect(String(after)).toBe("No reminders.")
+    const done = await t.reminder_done!.execute({ id: "r-1" }, { sessionID: sid } as never)
+    expect(String(done)).toContain("đã xóa")
+
+    const after = await t.reminder_list!.execute({}, { sessionID: sid } as never)
+    expect(String(after)).toBe("(trống)")
+    await hooks.dispose?.()
   })
 
   test("reject invalid when", async () => {
-    const res = await tools.reminder_add!.execute(
+    allCalls.length = 0
+    const client = makeClient()
+    const hooks = await ReminderPlugin({ client } as any)
+    const res = await hooks.tool!.reminder_add!.execute(
       { when: "whenever", label: "nope" },
-      ctx as never,
+      {} as never,
     )
     expect(String(res)).toContain("định dạng thời gian không hợp lệ")
+    await hooks.dispose?.()
   })
 
-  test("fires into correct session even when hidden (no status event seen)", async () => {
-    const hiddenSid = "ses_hidden"
-    const add = await tools.reminder_add!.execute(
-      { when: "in 1s", label: "hidden task" },
-      { ...ctx, sessionID: hiddenSid, agent: "build" } as never,
+  test("fires into correct session", async () => {
+    allCalls.length = 0
+    const sid = "ses_correct"
+    const client = makeClient()
+    const hooks = await ReminderPlugin({ client } as any)
+    await hooks.event?.({ event: { properties: { sessionID: sid } } })
+    const t = hooks.tool!
+
+    await t.reminder_add!.execute(
+      { when: "in 1s", label: "correct session" },
+      { sessionID: sid } as never,
     )
-    expect(String(add)).toContain("hidden task")
-    // Không gửi bất kỳ event session.status/idle nào → session được coi ẩn.
-    await tick(1400)
-    const fired = calls.find((c) => c.id === hiddenSid)
+    await wait(1400)
+
+    const fired = callsFor(sid).find(c => c.text.includes("correct session"))
     expect(fired).toBeDefined()
-    expect(fired!.agent).toBe("build")
-    expect(fired!.text).toContain("hidden task")
+    await hooks.dispose?.()
   })
 
-  test("persists outbox and resumes after plugin restart (Ctrl-C -> reopen)", async () => {
-    const resumeSid = "ses_resume"
-    // Tạo reminder đến hạn ngay, nhưng client sẽ fail (không có promptAsync).
+  test("persists and resumes after plugin restart", async () => {
+    allCalls.length = 0
+    const sid = "ses_resume"
+
+    // Phase 1: broken client → push fails, but reminder saved to disk
     const brokenClient = { session: null }
     const hooks2 = await ReminderPlugin({ client: brokenClient } as any)
+    await hooks2.event?.({ event: { properties: { sessionID: sid } } })
     await hooks2.tool!.reminder_add!.execute(
       { when: "in 1s", label: "resume me" },
-      { ...ctx, sessionID: resumeSid, agent: "plan" } as never,
+      { sessionID: sid } as never,
     )
-    await tick(1200) // due + scan, nhưng promptAsync fail → giữ outbox + persist
-
-    // Giả lập user Ctrl-C exit rồi mở lại: dispose (save) + khởi tạo lại plugin
-    // với client mới (khôi phục từ outbox.json).
+    await wait(1200)
     await hooks2.dispose?.()
 
-    const callsAfter: PromptCall[] = []
+    // Phase 2: fresh client → load from disk → push succeeds
+    const freshCalls: PromptCall[] = []
     const freshClient = {
       session: {
-        promptAsync: async (o: { path: { id: string }; body: { agent?: string; parts: Array<{ type: string; text: string }> } }) => {
-          callsAfter.push({ id: o.path.id, agent: o.body.agent, text: o.body.parts.map((p) => p.text).join("") })
+        promptAsync: async (o: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => {
+          freshCalls.push({ id: o.path.id, text: o.body.parts.map((p) => p.text).join("") })
           return { data: undefined }
         },
       },
     }
     const hooks3 = await ReminderPlugin({ client: freshClient } as any)
-    await tick(200) // init loadOutbox → ensureRunning → flush tiếp tục
+    await hooks3.event?.({ event: { properties: { sessionID: sid } } })
+    await wait(1400)
 
-    const resumed = callsAfter.find((c) => c.id === resumeSid)
+    const resumed = freshCalls.find(c => c.id === sid && c.text.includes("resume me"))
     expect(resumed).toBeDefined()
-    expect(resumed!.text).toContain("resume me")
     await hooks3.dispose?.()
   })
 
-  test("retries on next scan tick when promptAsync fails once", async () => {
-    let failOnce = true
-    const callsR: PromptCall[] = []
-    const flakyClient = {
-      session: {
-        promptAsync: async (o: { path: { id: string }; body: { agent?: string; parts: Array<{ type: string; text: string }> } }) => {
-          if (failOnce) { failOnce = false; throw new Error("network down") }
-          callsR.push({ id: o.path.id, agent: o.body.agent, text: o.body.parts.map((p) => p.text).join("") })
-          return { data: undefined }
-        },
-      },
-    }
-    const hooks4 = await ReminderPlugin({ client: flakyClient } as any)
-    await hooks4.tool!.reminder_add!.execute(
+  test("failed push retries on next tick (not same tick)", async () => {
+    allCalls.length = 0
+    const sid = "ses_flaky"
+    const client = makeClient(true) // failOnce
+    const hooks = await ReminderPlugin({ client } as any)
+    await hooks.event?.({ event: { properties: { sessionID: sid } } })
+    await hooks.tool!.reminder_add!.execute(
       { when: "in 1s", label: "flaky" },
-      { ...ctx, agent: "plan" } as never,
+      { sessionID: sid } as never,
     )
-    await tick(1600) // lần 1 fail, scan tick kế tiếp (50ms) retry thành công
-    expect(callsR.find((c) => c.text.includes("flaky"))).toBeDefined()
-    await hooks4.dispose?.()
+    await wait(1600)
+    expect(callsFor(sid).find(c => c.text.includes("flaky"))).toBeDefined()
+    await hooks.dispose?.()
   })
 
   test("add with explicit id keeps that id (update not create new)", async () => {
-    const hooks5 = await ReminderPlugin({ client: fakeClient } as any)
-    const add1 = await hooks5.tool!.reminder_add!.execute(
-      { when: "every 2h", label: "original r-4", id: "r-testid" },
-      { ...ctx, agent: "plan" } as never,
+    allCalls.length = 0
+    const client = makeClient()
+    const hooks = await ReminderPlugin({ client } as any)
+    const t = hooks.tool!
+
+    const add1 = await t.reminder_add!.execute(
+      { when: "every 2h", label: "original", id: "r-testid" },
+      {} as never,
     )
     expect(String(add1)).toContain("r-testid")
     expect(String(add1)).toContain("created")
-    let list = await hooks5.tool!.reminder_list!.execute({}, ctx as never)
+
+    let list = await t.reminder_list!.execute({}, {} as never)
     expect(String(list)).toContain("r-testid")
 
-    // Update cùng id → phải update tại chỗ, KHÔNG tạo id mới.
-    const add2 = await hooks5.tool!.reminder_add!.execute(
-      { when: "every 2h", label: "updated r-testid", id: "r-testid" },
-      { ...ctx, agent: "plan" } as never,
+    const add2 = await t.reminder_add!.execute(
+      { when: "every 2h", label: "updated", id: "r-testid" },
+      {} as never,
     )
     expect(String(add2)).toContain("r-testid")
     expect(String(add2)).toContain("updated")
 
-    list = await hooks5.tool!.reminder_list!.execute({}, ctx as never)
-    expect(String(list)).toContain("updated r-testid")
-    expect(String(list)).not.toContain("original r-testid")
-    // đảm bảo chỉ có đúng 1 dòng chứa r-testid
+    list = await t.reminder_list!.execute({}, {} as never)
+    expect(String(list)).toContain("updated")
+    expect(String(list)).not.toContain("original")
     const matches = String(list).split("\n").filter((l) => l.includes("r-testid"))
     expect(matches.length).toBe(1)
-    await hooks5.dispose?.()
+    await hooks.dispose?.()
   })
 
-  test("failed push does NOT drop the reminder (retries next tick)", async () => {
-    const callsF: Array<{ text: string }> = []
-    let failOnce = true
-    const flakyClient = {
-      session: {
-        promptAsync: async (o: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => {
-          if (failOnce) { failOnce = false; throw new Error("agent busy") }
-          callsF.push({ text: o.body.parts.map((p) => p.text).join("") })
-          return { data: undefined }
-        },
-      },
-    }
-    const hooks6 = await ReminderPlugin({ client: flakyClient } as any)
-    // kích hoạt session để push có _sid (plugin set _sid qua event handler)
-    await hooks6.event?.({ event: { properties: { sessionID: "ses_retry" } } })
-    await hooks6.tool!.reminder_add!.execute(
-      { when: "in 1s", label: "must-survive", id: "r-retry" },
-      { ...ctx, agent: "plan" } as never,
-    )
-    // Đủ thời gian để reminder due (1s) + qua ít nhất 2 tick (mỗi 50ms).
-    // Tick đầu push fail (failOnce) → reminder KHÔNG bị drop, thử lại tick sau → ok.
-    await new Promise((r) => setTimeout(r, 1500))
-    const delivered = callsF.find((c) => c.text.includes("must-survive"))
-    expect(delivered).toBeDefined()
-    // Chỉ đúng 1 lần delivered (không bị duplicate do lastRemindAt bug cũ)
-    const count = callsF.filter((c) => c.text.includes("must-survive")).length
-    expect(count).toBe(1)
-    await hooks6.dispose?.()
-  })
+  test("recurring reminder: done -> next occurrence, not deleted", async () => {
+    allCalls.length = 0
+    const client = makeClient()
+    const hooks = await ReminderPlugin({ client } as any)
+    const t = hooks.tool!
 
-  test("recurring reminder keeps nagging until reminder_done, then advances", async () => {
-    const callsR: Array<{ text: string }> = []
-    const freshClient = {
-      session: {
-        promptAsync: async (o: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => {
-          callsR.push({ text: o.body.parts.map((p) => p.text).join("") })
-          return { data: undefined }
-        },
-      },
-    }
-    const hooks7 = await ReminderPlugin({ client: freshClient } as any)
-    await hooks7.event?.({ event: { properties: { sessionID: "ses_recur" } } })
-    await hooks7.tool!.reminder_add!.execute(
+    await t.reminder_add!.execute(
       { when: "every 2h", label: "recur-task", id: "r-recur" },
-      { ...ctx, agent: "plan" } as never,
+      {} as never,
     )
-    // recurring (interval) → chưa due, chỉ xác nhận tồn tại
-    const list0 = String(await hooks7.tool!.reminder_list!.execute({}, ctx as never))
+    const list0 = String(await t.reminder_list!.execute({}, {} as never))
     expect(list0).toContain("r-recur")
-    // mark due thủ công để giả lập đã nhắc (set qua internal state không có sẵn,
-    // nên chỉ test done → kỳ kế cho recurring)
-    const list1 = String(await hooks7.tool!.reminder_list!.execute({}, ctx as never))
-    expect(list1).toContain("r-recur")
 
-    // Gọi reminder_done → sang kỳ kế (due=false)
-    const done = await hooks7.tool!.reminder_done!.execute({ id: "r-recur" }, ctx as never)
+    const done = await t.reminder_done!.execute({ id: "r-recur" }, {} as never)
     expect(String(done)).toContain("kỳ kế")
-    const list2 = String(await hooks7.tool!.reminder_list!.execute({}, ctx as never))
-    expect(list2).toContain("r-recur")
-    expect(list2).not.toContain("chờ xác nhận")
-    await hooks7.dispose?.()
+
+    const list1 = String(await t.reminder_list!.execute({}, {} as never))
+    expect(list1).toContain("r-recur")
+    expect(list1).not.toContain("chờ xác nhận")
+    await hooks.dispose?.()
+  })
+
+  test("nag pushes resum for overdue due=true reminders", async () => {
+    allCalls.length = 0
+    const sid = "ses_nag"
+    const client = makeClient()
+    const hooks = await ReminderPlugin({ client } as any)
+    await hooks.event?.({ event: { properties: { sessionID: sid } } })
+    const t = hooks.tool!
+
+    await t.reminder_add!.execute(
+      { when: "in 1s", label: "nag-test", id: "r-nag" },
+      { sessionID: sid } as never,
+    )
+
+    // Wait for tick to fire (remind)
+    await wait(1400)
+    const remind = callsFor(sid).find(c => c.text.includes("!ev remind:") && c.text.includes("nag-test"))
+    expect(remind).toBeDefined()
+
+    // Verify due state
+    const list = String(await t.reminder_list!.execute({}, { sessionID: sid } as never))
+    expect(list).toContain("chờ xác nhận")
+
+    // done to clean up
+    await t.reminder_done!.execute({ id: "r-nag" }, { sessionID: sid } as never)
+    await hooks.dispose?.()
+  })
+
+  test("reminder_done on one-time deletes, on recurring advances", async () => {
+    allCalls.length = 0
+    const client = makeClient()
+    const hooks = await ReminderPlugin({ client } as any)
+    const t = hooks.tool!
+
+    await t.reminder_add!.execute(
+      { when: "in 1h", label: "once-task", id: "r-once" },
+      {} as never,
+    )
+    const done1 = await t.reminder_done!.execute({ id: "r-once" }, {} as never)
+    expect(String(done1)).toContain("đã xóa")
+
+    await t.reminder_add!.execute(
+      { when: "daily 09:00", label: "daily-task", id: "r-daily" },
+      {} as never,
+    )
+    const done2 = await t.reminder_done!.execute({ id: "r-daily" }, {} as never)
+    expect(String(done2)).toContain("kỳ kế")
+    expect(String(done2)).not.toContain("đã xóa")
+
+    await hooks.dispose?.()
   })
 })

@@ -4,12 +4,12 @@ tool.schema = z
 
 // ════════════════════════════════════════════════════════════════════════
 //  reminder plugin — bộ nhắc cá nhân, lưu per-session <sid>.reminder.json.
+//  Cơ chế: tick 60s quét + push remind, nag 3ph push resum khi due.
 // ════════════════════════════════════════════════════════════════════════
 
 let _client: any = null
 
-const REMIND_INTERVAL_MS = 5 * 60 * 1000   // throttle nhắc thường
-const BATCH_WINDOW_MS = 60 * 1000          // cửa sổ gộp: nhắc luôn mục đến trong 1 phút tới
+const NAG_INTERVAL_MS = 3 * 60 * 1000      // chu kỳ nag (resum) khi due=true
 
 const STATE_DIR = `${process.env.HOME}/.local/share/opencode-reminders`
 
@@ -29,11 +29,12 @@ function saveReminders() {
 function loadReminders() {
   try {
     const f = reminderFile()
+    reminders.clear()
+    seq = 0
     if (!f) return
     const fs = require("fs")
     const data = JSON.parse(fs.readFileSync(f, "utf8"))
     const now = Date.now()
-    reminders.clear()
     for (const ev of (data || [])) {
       if (ev.repeat !== "none" && ev.nextAt <= now && !ev.due) ev.nextAt = nextOccurrence(ev, now)
       reminders.set(ev.id, ev)
@@ -52,15 +53,15 @@ interface Reminder {
   minute: number
   dow?: number
   intervalMs?: number
-  lastRemindAt?: number
   due?: boolean
   dueAt?: number
+  lastNagAt?: number
 }
 
 const reminders = new Map<string, Reminder>()
 let seq = 0
 let clockTimer: any = null
-let pendingBatch: string[] = []
+let nagTimer: any = null
 let verbose = false
 
 let pushQueue: Promise<void> = Promise.resolve()
@@ -178,74 +179,88 @@ const TICK_MS = (() => {
 })()
 function startClock() {
   if (clockTimer) return
-  scheduleNext()
+  scheduleTick()
+  scheduleNag()
 }
-function scheduleNext() {
+function scheduleTick() {
   clockTimer = setTimeout(async () => {
     try {
       await tick()
     } finally {
-      scheduleNext()
+      scheduleTick()
     }
   }, TICK_MS)
 }
+function scheduleNag() {
+  nagTimer = setTimeout(async () => {
+    try {
+      await nag()
+    } finally {
+      scheduleNag()
+    }
+  }, NAG_INTERVAL_MS)
+}
 function stopClock() {
   if (clockTimer) { clearTimeout(clockTimer); clockTimer = null }
+  if (nagTimer) { clearTimeout(nagTimer); nagTimer = null }
 }
 
 async function tick() {
   const now = Date.now()
-  pendingBatch = []
-  const near: Reminder[] = []
-  let trulyDue = 0
-  // Collect (ev, text) pairs to remind; only mark lastRemindAt AFTER a
-  // successful push so a busy/failing agent doesn't silently swallow reminders.
-  const toRemind: Array<{ ev: Reminder; text: string }> = []
+  let pushed = 0
 
   for (const [id, ev] of reminders) {
-    if (ev.due) {
-      if (!ev.lastRemindAt || now - ev.lastRemindAt >= REMIND_INTERVAL_MS) {
-        const late = Math.max(0, Math.round((now - (ev.dueAt || now)) / 60000))
-        toRemind.push({ ev, text: `reminder ${id} ${ev.label} @${fmtTime(ev.dueAt || ev.nextAt)}${late ? ` (trễ ${late}m) — gọi reminder_done xác nhận` : ""}` })
-        trulyDue++
+    if (ev.due && ev.dueAt) continue  // đã vào nag phase, bỏ qua
+    if (now >= ev.nextAt) {
+      ev.due = true
+      ev.dueAt = ev.nextAt
+      const ok = await push(`!ev remind: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)} — gọi reminder_done`)
+      if (ok) {
+        ev.lastNagAt = now
+        pushed++
+      } else {
+        // push fail → bỏ qua, tick sau retry (vì dueAt chưa set lại)
+        ev.due = false
+        ev.dueAt = undefined
       }
-    } else if (now >= ev.nextAt) {
-      ev.due = true; ev.dueAt = ev.nextAt
-      toRemind.push({ ev, text: `reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)}` })
-      trulyDue++
-    } else if (ev.nextAt <= now + BATCH_WINDOW_MS) {
-      near.push(ev)
     }
-  }
-
-  if (trulyDue > 0) {
-    for (const ev of near) {
-      if (ev.lastRemindAt && now - ev.lastRemindAt < REMIND_INTERVAL_MS) continue
-      toRemind.push({ ev, text: `reminder ${ev.id} ${ev.label} @${fmtTime(ev.nextAt)} (~${Math.max(1, Math.round((ev.nextAt - now) / 1000))}s)` })
-    }
-  }
-
-  for (const { ev, text } of toRemind) {
-    pendingBatch.push(text)
-    const ok = await push(`!ev remind ${pendingBatch.length}: ` + text)
-    if (ok) ev.lastRemindAt = now
-    // if push failed (agent busy/thinking), leave lastRemindAt untouched so
-    // the next tick retries this reminder instead of dropping it.
   }
 
   if (verbose) {
     const ts = new Date(now).toTimeString().slice(0, 8)
-    const lines = [`[tick ${ts}]`]
-    if (reminders.size === 0) lines.push("  reminders: (empty)")
-    else for (const ev of reminders.values()) {
+    const lines = [`[tick ${ts}] ${reminders.size} reminders, ${pushed} pushed`]
+    for (const ev of reminders.values()) {
       const till = Math.round((ev.nextAt - now) / 1000)
-      lines.push(`  ${ev.id} "${ev.label}" [${repeatLabel(ev)}] in=${till}s`)
+      lines.push(`  ${ev.id} "${ev.label}" [${repeatLabel(ev)}] ${ev.due ? "DUE" : `in ${till}s`}`)
     }
-    lines.push(`  trulyDue=${trulyDue} batch=${pendingBatch.length}`)
     await push(lines.join("\n"))
   }
 
   saveReminders()
+}
+
+async function nag() {
+  const now = Date.now()
+  let pushed = 0
+
+  for (const [id, ev] of reminders) {
+    if (!ev.due || !ev.dueAt) continue  // chưa vào nag phase
+    if (!ev.lastNagAt || now - ev.lastNagAt >= NAG_INTERVAL_MS) {
+      const late = Math.max(0, Math.round((now - ev.dueAt) / 60000))
+      const ok = await push(`!ev resum: reminder ${id} ${ev.label} @${fmtTime(ev.dueAt)}${late ? ` (trễ ${late}m)` : ""} — gọi reminder_done`)
+      if (ok) {
+        ev.lastNagAt = now
+        pushed++
+      }
+    }
+  }
+
+  if (verbose && pushed > 0) {
+    const ts = new Date(now).toTimeString().slice(0, 8)
+    await push(`[nag ${ts}] ${pushed} resum pushed`)
+  }
+
+  if (pushed > 0) saveReminders()
 }
 
 // ── Tools (y hệt style scheduler: tool() + tool.schema.string()) ──────────
@@ -283,6 +298,7 @@ const tools = {
         ev.nextAt = parsed.nextAt
         ev.due = false
         ev.dueAt = undefined
+        ev.lastNagAt = undefined
         reminders.set(id, ev)
         // Giữ seq luôn lớn hơn mọi id dạng r-N để không trùng ID tự sinh.
         const m = /^r-(\d+)$/.exec(id)
@@ -299,7 +315,7 @@ const tools = {
   }),
 
   reminder_list: tool({
-    description: "Liệt kê tất cả nhắc (trạng thái: upcoming / chờ xác nhận).",
+    description: "Liệt kê tất cả nhắc. Trạng thái: ⏰ upcoming (chưa đến hạn), 🔔 due (đã push remind, chờ done).",
     args: {},
     async execute() {
       if (reminders.size === 0) return "(trống)"
@@ -314,7 +330,7 @@ const tools = {
   }),
 
   reminder_done: tool({
-    description: "Confirm reminder done (this occurrence), on !ev reminder due. One-time->deleted; repeat->next occurrence.",
+    description: "Xác nhận đã thực hiện nhắc. Phản hồi !ev remind (tick) hoặc !ev resum (nag). Loại one-time (in/at) → xóa; lặp (every/daily/weekly) → chuyển kỳ kế.",
     args: { id: tool.schema.string() },
     async execute(args: any) {
       const ev = reminders.get(args.id)
@@ -325,7 +341,7 @@ const tools = {
         return `done ${args.id} (đã xóa)`
       }
       ev.nextAt = nextOccurrence(ev, Date.now())
-      ev.due = false; ev.dueAt = undefined; ev.lastRemindAt = undefined
+      ev.due = false; ev.dueAt = undefined; ev.lastNagAt = undefined
       saveReminders()
       return `done ${args.id} → kỳ kế ${new Date(ev.nextAt).toTimeString().slice(0, 5)}`
     },
@@ -341,7 +357,7 @@ const tools = {
   }),
 
   reminder_verbose: tool({
-    description: "Bật/tắt log debug mỗi phút [on|off].",
+    description: "Bật/tắt log debug mỗi chu kỳ tick/nag [on|off].",
     args: { on: tool.schema.string().optional() },
     async execute(args: any) {
       if (args.on === "on" || args.on === "1" || args.on === "true") verbose = true
@@ -352,7 +368,7 @@ const tools = {
   }),
 
   reminder_start: tool({
-    description: "Khởi chạy clock nhắc nếu chưa chạy.",
+    description: "Khởi chạy clock tick (60s) + nag (3ph) nếu chưa chạy.",
     args: {},
     async execute() {
       const started = ensureRunning()
@@ -372,6 +388,7 @@ function ensureRunning(): boolean {
 
 export const ReminderPlugin = async ({ client }: { client: any }) => {
   _client = client
+  _sid = undefined
   loadReminders()
   if (reminders.size > 0) ensureRunning()
 
