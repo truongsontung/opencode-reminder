@@ -36,6 +36,7 @@ let seq = 0
 let clockTimer: any = null
 let nagTimer: any = null
 let verbose = false
+let _inTick = false
 
 // ── Persistence ─────────────────────────────────────────────────────────
 
@@ -232,16 +233,21 @@ async function tick() {
   saveReminders()
   const now = Date.now()
   let pushed = 0
+  _inTick = true
 
-  for (const [id, ev] of reminders) {
-    if (ev.state === "due") {
-      const ok = await push(`!ev remind: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)} — gọi reminder_done`)
-      if (ok) {
-        ev.state = "overdue"
-        saveReminders()
-        pushed++
+  try {
+    for (const [id, ev] of reminders) {
+      if (ev.state === "due") {
+        const ok = await push(`!ev remind: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)} — gọi reminder_done`)
+        if (ok) {
+          ev.state = "overdue"
+          saveReminders()
+          pushed++
+        }
       }
     }
+  } finally {
+    _inTick = false
   }
 
   if (verbose) {
@@ -399,6 +405,7 @@ export const ReminderPlugin = async ({ client }: { client: any }) => {
       stopClock()
     },
     event: async ({ event }: { event: any }) => {
+      if (_inTick) return
       const sid = event?.properties?.sessionID
         || event?.properties?.info?.sessionID
         || event?.properties?.info?.id
