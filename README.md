@@ -38,22 +38,22 @@ into the exact session that created it.
 ## State machine: idle → due → overdue
 
 ```
-idle  ──[now >= nextAt]──> due
-due   ──[push remind OK]──> overdue
-due   ──[push remind FAIL]──> due (tick sau retry)
-overdue ──[push resum]──> overdue (giữ đến khi done)
+idle  ──[scheduler: now >= nextAt]──> due
+due   ──[tick: push remind OK]──> overdue
+due   ──[tick: push remind FAIL]──> due (tick sau retry)
+overdue ──[nag: push resum]──> overdue (giữ đến khi done)
 any   ──[reminder_done]──> idle (repeat) hoặc xóa (none)
 ```
 
-### Tick (60s) — push remind
+### Components
 
-Quét idle reminders đến hạn → set state = due → push `!ev remind` 1 lần.
-- Thành công → state = overdue, bắt đầu nag
-- Thất bại → giữ state = due, tick sau retry
+| Component | Nhiệm vụ | Dùng gì |
+|-----------|----------|---------|
+| **scheduler** | Chuyển idle → due khi đến hạn | Chỉ đọc `nextAt` |
+| **tick** (60s) | Push remind khi state = due | Chỉ đọc `state` |
+| **nag** (3ph) | Push resum khi state = overdue | Chỉ đọc `state` |
 
-### Nag (3ph) — push resum
-
-Quét overdue reminders → push `!ev resum` 1 lần mỗi 3 phút đến khi done.
+`nextAt` chỉ là data trong JSON — **không dùng để quyết định push**.
 
 ### Định dạng thông điệp
 

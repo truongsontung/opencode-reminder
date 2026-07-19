@@ -180,6 +180,17 @@ function nextOccurrence(ev: Reminder, now: number): number {
   return ev.nextAt
 }
 
+// ── Scheduler (chỉ chuyển state dựa nextAt) ────────────────────────────
+
+function scheduleStates() {
+  const now = Date.now()
+  for (const ev of reminders.values()) {
+    if (ev.state === "idle" && now >= ev.nextAt) {
+      ev.state = "due"
+    }
+  }
+}
+
 // ── Tick + Nag ──────────────────────────────────────────────────────────
 
 function startClock() {
@@ -211,13 +222,11 @@ function ensureRunning(): boolean {
 }
 
 async function tick() {
+  scheduleStates()
   const now = Date.now()
   let pushed = 0
 
   for (const [id, ev] of reminders) {
-    if (ev.state === "idle" && now >= ev.nextAt) {
-      ev.state = "due"
-    }
     if (ev.state === "due") {
       const ok = await push(`!ev remind: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)} — gọi reminder_done`)
       if (ok) {
@@ -231,8 +240,7 @@ async function tick() {
     const ts = new Date(now).toTimeString().slice(0, 8)
     const lines = [`[tick ${ts}] ${reminders.size} reminders, ${pushed} pushed`]
     for (const ev of reminders.values()) {
-      const till = Math.round((ev.nextAt - now) / 1000)
-      lines.push(`  ${ev.id} "${ev.label}" [${repeatLabel(ev)}] state=${ev.state}${ev.state === "idle" ? ` in ${till}s` : ""}`)
+      lines.push(`  ${ev.id} "${ev.label}" [${repeatLabel(ev)}] state=${ev.state}`)
     }
     await push(lines.join("\n"))
   }
@@ -241,19 +249,17 @@ async function tick() {
 }
 
 async function nag() {
-  const now = Date.now()
   let pushed = 0
 
   for (const [id, ev] of reminders) {
     if (ev.state === "overdue") {
-      const late = Math.max(0, Math.round((now - ev.nextAt) / 60000))
-      const ok = await push(`!ev resum: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)}${late ? ` (trễ ${late}m)` : ""} — gọi reminder_done`)
+      const ok = await push(`!ev resum: reminder ${id} ${ev.label} — gọi reminder_done`)
       if (ok) pushed++
     }
   }
 
   if (verbose && pushed > 0) {
-    const ts = new Date(now).toTimeString().slice(0, 8)
+    const ts = new Date().toTimeString().slice(0, 8)
     await push(`[nag ${ts}] ${pushed} resum pushed`)
   }
 
