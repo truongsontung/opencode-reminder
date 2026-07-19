@@ -214,7 +214,7 @@ async function tick() {
     if (now >= ev.nextAt) {
       ev.due = true
       ev.dueAt = ev.nextAt
-      const ok = await push(`!ev remind: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)} — gọi reminder_done`)
+      const ok = await push(`!ev remind: reminder ${id} ${ev.label} @${fmtTime(ev.nextAt)} — CHỜ user xác nhận, KHÔNG tự gọi reminder_done`)
       if (ok) {
         ev.lastNagAt = now
         pushed++
@@ -247,7 +247,7 @@ async function nag() {
     if (!ev.due || !ev.dueAt) continue  // chưa vào nag phase
     if (!ev.lastNagAt || now - ev.lastNagAt >= NAG_INTERVAL_MS) {
       const late = Math.max(0, Math.round((now - ev.dueAt) / 60000))
-      const ok = await push(`!ev resum: reminder ${id} ${ev.label} @${fmtTime(ev.dueAt)}${late ? ` (trễ ${late}m)` : ""} — gọi reminder_done`)
+      const ok = await push(`!ev resum: reminder ${id} ${ev.label} @${fmtTime(ev.dueAt)}${late ? ` (trễ ${late}m)` : ""} — CHỜ user xác nhận, KHÔNG tự gọi reminder_done`)
       if (ok) {
         ev.lastNagAt = now
         pushed++
@@ -330,7 +330,7 @@ const tools = {
   }),
 
   reminder_done: tool({
-    description: "Xác nhận đã thực hiện nhắc. Phản hồi !ev remind (tick) hoặc !ev resum (nag). Loại one-time (in/at) → xóa; lặp (every/daily/weekly) → chuyển kỳ kế.",
+    description: "Xác nhận đã thực hiện nhắc. CHỈ gọi khi user xác nhận đã xong, KHÔNG tự gọi khi nhận !ev remind hoặc !ev resum. Loại one-time (in/at) → xóa; lặp (every/daily/weekly) → chuyển kỳ kế.",
     args: { id: tool.schema.string() },
     async execute(args: any) {
       const ev = reminders.get(args.id)
