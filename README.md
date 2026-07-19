@@ -6,23 +6,9 @@ into the exact session that created it.
 
 ## Install
 
-Thêm plugin vào opencode config (file `.ts` được load trực tiếp):
-
 ```json
 {
   "plugin": ["/home/vps2/opencode-reminders/src/index.ts"]
-}
-```
-
-Hoặc copy vào thư mục plugins và dùng tên:
-
-```sh
-cp /home/vps2/opencode-reminders/src/index.ts ~/.config/opencode/plugins/reminder.ts
-```
-
-```json
-{
-  "plugin": ["reminder"]
 }
 ```
 
@@ -31,23 +17,11 @@ cp /home/vps2/opencode-reminders/src/index.ts ~/.config/opencode/plugins/reminde
 | Tool              | Purpose                                                                     |
 | ----------------- | --------------------------------------------------------------------------- |
 | `reminder_add`    | Tạo nhắc (`when` + `label`).                                               |
-| `reminder_list`   | Liệt kê nhắc. Trạng thái: ⏰ upcoming, 🔔 due (chờ done).                 |
+| `reminder_list`   | Liệt kê nhắc. Trạng thái: ⏰ idle, 🔔 due, 🔔 overdue.                    |
 | `reminder_done`   | Xác nhận done. One-time → xóa; lặp → kỳ kế.                              |
 | `reminder_del`    | Xóa nhắc vĩnh viễn.                                                        |
 | `reminder_start`  | Khởi chạy clock tick (60s) + nag (3ph).                                     |
-| `reminder_verbose`| Bật/tắt log debug mỗi chu kỳ (`on`/`off`).                                 |
-
-## Cách dùng (agent)
-
-Khi user nói "nhắc tôi…", "đặt báo…", "nhắc sau N phút/giờ/ngày", gọi `reminder_add`.
-
-- `reminder_add when="in 30m" label="nghỉ ngơi"` — nhắc sau 30 phút
-- `reminder_add when="daily 09:00" label="đọc báo"` — mỗi ngày 09:00
-- `reminder_add when="every 2h" label="uống nước"` — lặp mỗi 2 giờ
-- `reminder_add when="mon 09:00" label="họp"` — mỗi thứ 2 09:00
-- `reminder_list` — liệt kê nhắc
-- `reminder_start` — bật clock
-- `reminder_done <id>` / `reminder_del <id>` — dừng / xóa
+| `reminder_verbose`| Bật/tắt log debug (`on`/`off`).                                            |
 
 ## `when` syntax
 
@@ -61,67 +35,46 @@ Khi user nói "nhắc tôi…", "đặt báo…", "nhắc sau N phút/giờ/ngà
 | `every 90m`   | mỗi 90 phút                     | có   |
 | `every 2h`    | mỗi 2 giờ                       | có   |
 
-Đơn vị: `m` (phút), `h` (giờ). Chu kỳ lặp tối thiểu 1 phút.
-
-## Cơ chế hai luồng: Tick (remind) + Nag (resum)
-
-Hệ thống chạy song song 2 luồng quét:
-
-### Tick — nhắc lần đầu (60s)
+## State machine: idle → due → overdue
 
 ```
-60s quét → tìm reminder đến hạn → push !ev remind 1 lần
-  ├─ thành công → due=true, dueAt=now → chuyển sang nag
-  └─ thất bại  → bỏ qua, tick sau tự retry
+idle  ──[now >= nextAt]──> due
+due   ──[push remind OK]──> overdue
+due   ──[push remind FAIL]──> due (tick sau retry)
+overdue ──[push resum]──> overdue (giữ đến khi done)
+any   ──[reminder_done]──> idle (repeat) hoặc xóa (none)
 ```
 
-### Nag — nhắc lại khi quá hạn (3ph)
+### Tick (60s) — push remind
 
-```
-3ph quét → tìm reminder due=true → push !ev resum 1 lần
-  ├─ thành công → giữ due=true, nag tiếp sau 3ph
-  └─ thất bại  → bỏ qua, nag sau tự retry
-```
+Quét idle reminders đến hạn → set state = due → push `!ev remind` 1 lần.
+- Thành công → state = overdue, bắt đầu nag
+- Thất bại → giữ state = due, tick sau retry
 
-### Flow hoàn chỉnh
+### Nag (3ph) — push resum
 
-```
-[nextAt reached]
-  → Tick: due=true, dueAt=nextAt → push "!ev remind: ..."
-  → Nag bắt đầu: mỗi 3ph push "!ev resum: ..."
-  → Lặp đến khi user gọi reminder_done
-
-[reminder_done]
-  → repeat=none (in/at) → xóa reminder
-  → repeat=other (every/daily/weekly) → nextAt=nextOccurrence, due=false, dueAt=undefined
-```
+Quét overdue reminders → push `!ev resum` 1 lần mỗi 3 phút đến khi done.
 
 ### Định dạng thông điệp
 
-| Loại    | Format                                                              |
-| ------- | ------------------------------------------------------------------- |
-| remind  | `!ev remind: reminder <id> <label> @<time> — gọi reminder_done`    |
-| resum   | `!ev resum: reminder <id> <label> @<time> (trễ Xm) — gọi reminder_done` |
+| Loại    | Format                                                          |
+| ------- | --------------------------------------------------------------- |
+| remind  | `!ev remind: reminder <id> <label> @<time> — gọi reminder_done`|
+| resum   | `!ev resum: reminder <id> <label> @<time> (trễ Xm) — gọi reminder_done`|
 
-Giờ hiển thị theo múi giờ thực tế của hệ thống (`Intl.DateTimeFormat`).
-
-## Persist & resume
-
-Mỗi session lưu riêng 1 file:
+## Persist
 
 ```
 ~/.local/share/opencode-reminders/<sessionID>.reminder.json
 ```
 
-JSON fields: `{id, label, nextAt, repeat, hour, minute, dow?, intervalMs?, due?, dueAt?, lastNagAt?}`
+Override: `OPENCODE_REMINDERS_DIR=/path/to/dir`
 
-- Clock ghi file mỗi chu kỳ → session tắt rồi mở lại, nhắc tiếp tục (resume).
-- Nag timer tự động chạy khi load reminder có due=true.
+Fields: `{id, label, nextAt, repeat, hour, minute, dow?, intervalMs?, state}`
 
 ## Develop
 
 ```sh
 bun install
 bun test
-bun run typecheck   # tsc --noEmit
 ```
