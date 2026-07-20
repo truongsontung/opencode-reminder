@@ -14,6 +14,8 @@ into the exact session that created it.
 
 ## Tools
 
+### Reminder Tools
+
 | Tool              | Purpose                                                                     |
 | ----------------- | --------------------------------------------------------------------------- |
 | `reminder_add`    | Tạo nhắc (`when` + `label`).                                               |
@@ -22,6 +24,17 @@ into the exact session that created it.
 | `reminder_del`    | Xóa nhắc vĩnh viễn.                                                        |
 | `reminder_start`  | Khởi chạy clock tick (60s) + nag (3ph).                                     |
 | `reminder_verbose`| Bật/tắt log debug (`on`/`off`).                                            |
+
+### Mailbox Tools
+
+| Tool                     | Purpose                                        |
+| ------------------------ | ---------------------------------------------- |
+| `reminder_mailbox_start` | Tạo mailbox cho session, trả địa chỉ email.   |
+| `reminder_mailbox_stop`  | Tạm dừng nhận email.                           |
+| `reminder_mailbox_delete`| Xoá mailbox vĩnh viễn.                        |
+| `reminder_mailbox_status`| Xem trạng thái mailbox.                        |
+| `reminder_mailbox_send`  | Gửi email từ mailbox.                         |
+| `reminder_mailbox_test`  | Test kết nối Gmail SMTP/IMAP.                 |
 
 ## `when` syntax
 
@@ -61,6 +74,86 @@ any   ──[reminder_done]──> idle (repeat) hoặc xóa (none)
 | ------- | --------------------------------------------------------------- |
 | remind  | `!ev remind: reminder <id> <label> @<time> — gọi reminder_done`|
 | resum   | `!ev resum: reminder <id> <label> @<time> (trễ Xm) — gọi reminder_done`|
+
+## Mailbox Feature
+
+Mailbox cho phép session nhận email từ bên ngoài. Plugin tự poll Gmail IMAP và inject
+`!ev mail:` event vào session khi có email mới.
+
+### Setup
+
+1. Tạo Gmail App Password tại [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+
+2. Cấu hình `/home/vps2/apps/mail-server/config.json`:
+
+```json
+{
+  "gmail": {
+    "email": "your-email@gmail.com",
+    "app_password": "xxxx xxxx xxxx xxxx",
+    "imap_host": "imap.gmail.com",
+    "imap_port": 993,
+    "smtp_host": "smtp.gmail.com",
+    "smtp_port": 587
+  },
+  "checker": {
+    "interval_seconds": 30,
+    "max_emails_per_check": 50
+  }
+}
+```
+
+### Tạo Mailbox
+
+```bash
+# Tạo mailbox check INBOX
+reminder_mailbox_start --session ses_xxx --name "My Mail"
+
+# Tạo mailbox check label cụ thể
+reminder_mailbox_start --session ses_xxx --name "GitHub" --gmail_label "GitHub"
+```
+
+Kết quả:
+```json
+{
+  "status": "created",
+  "session_id": "ses_xxx",
+  "mailbox": "your-email+abc123@gmail.com",
+  "gmail_label": "GitHub"
+}
+```
+
+### Mailbox per Session
+
+Mỗi session có thể có label Gmail riêng:
+
+```bash
+# Session 1: check label "GitHub"
+reminder_mailbox_start --session ses_001 --name "GitHub" --gmail_label "GitHub"
+
+# Session 2: check label "Bounty"
+reminder_mailbox_start --session ses_002 --name "Bounty" --gmail_label "Bounty"
+```
+
+### Workflow
+
+```
+1. Session tạo mailbox → nhận địa chỉ email
+2. Mail checker poll IMAP mỗi 30s
+3. Email mới đến → inject !ev mail: event vào session
+4. Session nhận event, xử lý email
+```
+
+### Event Format
+
+```bash
+!ev mail:From: sender@example.com
+To: your-email+abc123@gmail.com
+Subject: New bounty available
+Date: Mon, 20 Jul 2026 10:00:00 +0700
+
+[Email body content here...]
+```
 
 ## Persist
 

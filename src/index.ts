@@ -1,4 +1,9 @@
 import { z } from "zod"
+import {
+  mailboxStart, mailboxStop, mailboxDelete, mailboxStatus,
+  mailboxSend, mailboxTestConnection, startMailChecker, stopMailChecker,
+} from "./mailbox"
+
 function tool(def: any) { return def }
 tool.schema = z
 
@@ -291,7 +296,7 @@ const tools = {
     args: {
       label: tool.schema.string(),
       when: tool.schema.string(),
-      id: tool.schema.string({ required: false }),
+      id: tool.schema.string().optional(),
     },
     async execute(args: any) {
       if (ensureRunning()) push("!ev reminder ready")
@@ -395,6 +400,71 @@ const tools = {
       return clockTimer ? (started ? "reminder ready" : "reminder running") : "reminder stopped"
     },
   }),
+
+  // ── Mailbox Tools ────────────────────────────────────────────────────
+
+  reminder_mailbox_start: tool({
+    description: "Tạo mailbox mới cho session để nhận email. Trả địa chỉ email (Gmail plus addressing).",
+    args: {
+      session_id: tool.schema.string(),
+      name: tool.schema.string().optional(),
+      gmail_label: tool.schema.string().optional(),
+    },
+    async execute(args: any) {
+      if (!args?.session_id) return "! lỗi: thiếu session_id"
+      return mailboxStart({ session_id: args.session_id, name: args.name, gmail_label: args.gmail_label })
+    },
+  }),
+
+  reminder_mailbox_stop: tool({
+    description: "Tạm dừng nhận email cho session.",
+    args: { session_id: tool.schema.string() },
+    async execute(args: any) {
+      if (!args?.session_id) return "! lỗi: thiếu session_id"
+      return mailboxStop({ session_id: args.session_id })
+    },
+  }),
+
+  reminder_mailbox_delete: tool({
+    description: "Xoá mailbox của session (vĩnh viễn).",
+    args: { session_id: tool.schema.string() },
+    async execute(args: any) {
+      if (!args?.session_id) return "! lỗi: thiếu session_id"
+      return mailboxDelete({ session_id: args.session_id })
+    },
+  }),
+
+  reminder_mailbox_status: tool({
+    description: "Xem trạng thái mailbox. Nếu có session_id则 xem chi tiết, nếu không则 liệt kê tất cả.",
+    args: { session_id: tool.schema.string().optional() },
+    async execute(args: any) {
+      return mailboxStatus({ session_id: args?.session_id })
+    },
+  }),
+
+  reminder_mailbox_send: tool({
+    description: "Gửi email từ mailbox của session.",
+    args: {
+      session_id: tool.schema.string(),
+      to: tool.schema.string(),
+      subject: tool.schema.string(),
+      body: tool.schema.string(),
+    },
+    async execute(args: any) {
+      if (!args?.session_id || !args?.to || !args?.subject || !args?.body) {
+        return "! lỗi: thiếu tham số (session_id, to, subject, body)"
+      }
+      return mailboxSend({ session_id: args.session_id, to: args.to, subject: args.subject, body: args.body })
+    },
+  }),
+
+  reminder_mailbox_test: tool({
+    description: "Test kết nối Gmail SMTP/IMAP.",
+    args: {},
+    async execute() {
+      return mailboxTestConnection()
+    },
+  }),
 }
 
 // ── Plugin lifecycle ────────────────────────────────────────────────────
@@ -405,9 +475,13 @@ export const ReminderPlugin = async ({ client }: { client: any }) => {
   loadReminders()
   if (reminders.size > 0) ensureRunning()
 
+  // Start mail checker
+  startMailChecker(push)
+
   return {
     async dispose() {
       stopClock()
+      stopMailChecker()
     },
     event: async ({ event }: { event: any }) => {
       if (_inTick) return
