@@ -382,10 +382,8 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
               // Format event
               const eventLabel = `!ev mail:From: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${date}\n\n${body}`
 
-              // Write to reminder file (for persistence)
-              injectMailEvent(sessionId, eventLabel)
-
-              // Push into session's inline prompt immediately
+              // Push into session's inline prompt directly
+              // NOTE: Do NOT write to reminder file - it causes duplicate push by tick cycle
               await pushFn(eventLabel, sessionId)
 
               processed.add(String(uid))
