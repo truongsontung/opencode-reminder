@@ -93,6 +93,20 @@ async function push(msg: string, sid?: string): Promise<boolean> {
   }
 }
 
+// Mail checker pushes into a *session* (may differ from current _sid).
+// Replicate tick()'s proven mechanism exactly: temporarily bind _sid to the
+// target session, then call the same push(msg) with no explicit sid.
+async function pushMailTo(msg: string, sessionId?: string): Promise<boolean> {
+  if (!sessionId) return push(msg)
+  const prev = _sid
+  _sid = sessionId
+  try {
+    return await push(msg)
+  } finally {
+    _sid = prev
+  }
+}
+
 // ── When parsing ────────────────────────────────────────────────────────
 
 const DAY_MAP: any = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }
@@ -475,8 +489,10 @@ export const ReminderPlugin = async ({ client }: { client: any }) => {
   loadReminders()
   if (reminders.size > 0) ensureRunning()
 
-  // Start mail checker
-  startMailChecker(push)
+  // Start mail checker — replicate tick()'s exact push mechanism:
+  // set _sid to target session, then call push(msg) with NO explicit sid
+  // (this is the proven-working path used by tick()/nag()).
+  startMailChecker((msg: string, sessionId?: string) => pushMailTo(msg, sessionId))
 
   return {
     async dispose() {
