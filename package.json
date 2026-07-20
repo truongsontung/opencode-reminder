@@ -1,7 +1,7 @@
 {
   "name": "opencode-reminders",
   "version": "0.1.0",
-  "description": "Personal reminders for opencode — schedule notes that wake your session when due.",
+  "description": "Reminders and mailbox for agent automation.",
   "type": "module",
   "license": "MIT",
   "keywords": ["opencode", "opencode-plugin", "reminder", "scheduler"],
