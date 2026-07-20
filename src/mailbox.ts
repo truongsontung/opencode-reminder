@@ -64,10 +64,7 @@ function loadConfig(): MailboxConfig {
     try {
       mkdirSync(BASE_DIR, { recursive: true })
       writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2))
-      console.log(`[mailbox] Created default config: ${CONFIG_FILE}`)
-    } catch (e) {
-      console.error(`[mailbox] Failed to create config: ${e}`)
-    }
+    } catch {}
     return DEFAULT_CONFIG
   }
 }
@@ -351,7 +348,6 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
 
             if (isFirstRun && initialSync === "skip_all") {
               // First run: mark ALL existing emails as processed without injecting events
-              console.log(`[mail-checker] First run for ${sessionId}: skipping ${searchResult.length} existing emails`)
               for (const uid of searchResult) {
                 processed.add(String(uid))
               }
@@ -416,15 +412,11 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
               if (newCount > 0) sessions[sessionId].last_email_at = new Date().toISOString()
             }
           }
-        } catch (e) {
-          console.error(`[mail-checker] Error checking label "${label}":`, e)
-        }
+        } catch {}
       }
 
       saveSessions(sessions)
-    } catch (e) {
-      console.error("[mail-checker] Error:", e)
-    } finally {
+    } catch {} finally {
       if (client) await client.logout().catch(() => {})
     }
   }
@@ -432,7 +424,6 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
   // Start checker loop
   const interval = config.checker.interval_seconds * 1000
   mailCheckerTimer = setInterval(checkAllMailboxes, interval)
-  console.log(`[mail-checker] Started, checking every ${config.checker.interval_seconds}s`)
 }
 
 export function stopMailChecker() {
