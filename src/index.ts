@@ -93,18 +93,11 @@ async function push(msg: string, sid?: string): Promise<boolean> {
   }
 }
 
-// Mail checker pushes into a *session* (may differ from current _sid).
-// Replicate tick()'s proven mechanism exactly: temporarily bind _sid to the
-// target session, then call the same push(msg) with no explicit sid.
-async function pushMailTo(msg: string, sessionId?: string): Promise<boolean> {
-  if (!sessionId) return push(msg)
-  const prev = _sid
-  _sid = sessionId
-  try {
-    return await push(msg)
-  } finally {
-    _sid = prev
-  }
+// Mail checker only processes the mailbox whose session_id === _sid (the active
+// reminder session). Push into _sid exactly like tick()/nag() do — never into a
+// foreign session.
+async function pushMailTo(msg: string, _sessionId?: string): Promise<boolean> {
+  return push(msg)
 }
 
 // ── When parsing ────────────────────────────────────────────────────────
@@ -425,50 +418,51 @@ const tools = {
       gmail_label: tool.schema.string().optional(),
     },
     async execute(args: any) {
-      if (!args?.session_id) return "! lỗi: thiếu session_id"
-      return mailboxStart({ session_id: args.session_id, name: args.name, gmail_label: args.gmail_label })
+      if (!_sid) return "! lỗi: chưa xác định được session hiện tại (_sid)"
+      return mailboxStart({ session_id: _sid, name: args?.name, gmail_label: args?.gmail_label })
     },
   }),
 
   reminder_mailbox_stop: tool({
-    description: "Tạm dừng nhận email cho session.",
-    args: { session_id: tool.schema.string() },
-    async execute(args: any) {
-      if (!args?.session_id) return "! lỗi: thiếu session_id"
-      return mailboxStop({ session_id: args.session_id })
+    description: "Tạm dừng nhận email cho session hiện tại.",
+    args: {},
+    async execute() {
+      if (!_sid) return "! lỗi: chưa xác định được session hiện tại (_sid)"
+      return mailboxStop({ session_id: _sid })
     },
   }),
 
   reminder_mailbox_delete: tool({
-    description: "Xoá mailbox của session (vĩnh viễn).",
-    args: { session_id: tool.schema.string() },
-    async execute(args: any) {
-      if (!args?.session_id) return "! lỗi: thiếu session_id"
-      return mailboxDelete({ session_id: args.session_id })
+    description: "Xoá mailbox của session hiện tại (vĩnh viễn).",
+    args: {},
+    async execute() {
+      if (!_sid) return "! lỗi: chưa xác định được session hiện tại (_sid)"
+      return mailboxDelete({ session_id: _sid })
     },
   }),
 
   reminder_mailbox_status: tool({
-    description: "Xem trạng thái mailbox. Nếu có session_id则 xem chi tiết, nếu không则 liệt kê tất cả.",
-    args: { session_id: tool.schema.string().optional() },
-    async execute(args: any) {
-      return mailboxStatus({ session_id: args?.session_id })
+    description: "Xem trạng thái mailbox của session hiện tại.",
+    args: {},
+    async execute() {
+      if (!_sid) return "! lỗi: chưa xác định được session hiện tại (_sid)"
+      return mailboxStatus({ session_id: _sid })
     },
   }),
 
   reminder_mailbox_send: tool({
-    description: "Gửi email từ mailbox của session.",
+    description: "Gửi email từ mailbox của session hiện tại.",
     args: {
-      session_id: tool.schema.string(),
       to: tool.schema.string(),
       subject: tool.schema.string(),
       body: tool.schema.string(),
     },
     async execute(args: any) {
-      if (!args?.session_id || !args?.to || !args?.subject || !args?.body) {
-        return "! lỗi: thiếu tham số (session_id, to, subject, body)"
+      if (!_sid) return "! lỗi: chưa xác định được session hiện tại (_sid)"
+      if (!args?.to || !args?.subject || !args?.body) {
+        return "! lỗi: thiếu tham số (to, subject, body)"
       }
-      return mailboxSend({ session_id: args.session_id, to: args.to, subject: args.subject, body: args.body })
+      return mailboxSend({ session_id: _sid, to: args.to, subject: args.subject, body: args.body })
     },
   }),
 
@@ -489,10 +483,12 @@ export const ReminderPlugin = async ({ client }: { client: any }) => {
   loadReminders()
   if (reminders.size > 0) ensureRunning()
 
-  // Start mail checker — replicate tick()'s exact push mechanism:
-  // set _sid to target session, then call push(msg) with NO explicit sid
-  // (this is the proven-working path used by tick()/nag()).
-  startMailChecker((msg: string, sessionId?: string) => pushMailTo(msg, sessionId))
+  // Start mail checker. It processes ONLY the mailbox whose session_id === _sid
+  // (the active reminder session) and pushes into _sid — same as tick()/nag().
+  startMailChecker(
+    (msg: string) => pushMailTo(msg),
+    () => _sid,
+  )
 
   return {
     async dispose() {

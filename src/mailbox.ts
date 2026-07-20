@@ -272,7 +272,10 @@ function updateHeartbeat(status: "running" | "idle" | "error", sessionId?: strin
   } catch {}
 }
 
-export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<boolean>) {
+export function startMailChecker(
+  pushFn: (msg: string, sid?: string) => Promise<boolean>,
+  getCurrentSid?: () => string | undefined,
+) {
   if (mailCheckerTimer) return
 
   const config = loadConfig()
@@ -281,8 +284,13 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
   }
 
   async function checkAllMailboxes() {
+    const currentSid = getCurrentSid?.()
     const sessions = loadSessions()
-    const activeSessions = Object.entries(sessions).filter(([, s]) => s.active)
+    // Only process the mailbox that belongs to the CURRENTLY ACTIVE session
+    // (same _sid used by reminders). Never push into a stale/foreign session.
+    const activeSessions = Object.entries(sessions).filter(
+      ([id, s]) => s.active && !!currentSid && id === currentSid,
+    )
 
     if (activeSessions.length === 0) {
       updateHeartbeat("idle")
