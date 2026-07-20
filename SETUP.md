@@ -43,9 +43,8 @@ Mailbox đọc config từ (mặc định trong code, biến `<MAIL_DIR>`):
 <MAIL_DIR>/config.json
 ```
 
-> `<MAIL_DIR>` mặc định là `/home/vps2/apps/mail-server` (được hardcode trong
-> `src/mailbox.ts`). Nếu bạn đặt ở máy khác, hãy sửa hằng `BASE_DIR` trong
-> `src/mailbox.ts` cho khớp, hoặc để nguyên và tạo thư mục tại đúng đường dẫn đó.
+> `<MAIL_DIR>` mặc định là `~/.opencode/mail-server` (hoặc set env `OPENCODE_MAIL_DIR`).
+> Thư mục này sẽ tự động được tạo khi bạn gọi `reminder_mailbox_start` lần đầu.
 
 Thư mục `<MAIL_DIR>` và file `config.json` sẽ **tự động được tạo** khi bạn gọi
 `reminder_mailbox_test` hoặc `reminder_mailbox_start` lần đầu — nhưng để chủ động,

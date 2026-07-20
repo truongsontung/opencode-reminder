@@ -85,7 +85,7 @@ The plugin reads two optional environment variables:
 | `OPENCODE_REMINDERS_TICK_MS` | `60000`                               | Tick interval in milliseconds (min `>0`).    |
 
 Mailbox settings live in `<MAIL_DIR>/config.json` (default `<MAIL_DIR>` is
-`/home/vps2/apps/mail-server`, hardcoded in `src/mailbox.ts`; auto-created with
+`~/.opencode/mail-server`, or set env `OPENCODE_MAIL_DIR`; auto-created with
 defaults on first run):
 
 ```json
@@ -244,7 +244,7 @@ Quick start:
 
 ```bash
 bun install
-mkdir -p <MAIL_DIR>   # write config.json with gmail credentials (default: /home/vps2/apps/mail-server)
+mkdir -p <MAIL_DIR>   # write config.json with gmail credentials (default: ~/.opencode/mail-server)
 # In OpenCode:
 reminder_mailbox_test      # verify config
 reminder_mailbox_start     # create mailbox → you+<code>@gmail.com

@@ -33,7 +33,7 @@ function decodeRFC2047(text: string): string {
 
 // ── Config ──────────────────────────────────────────────────────────────
 
-const BASE_DIR = "/home/vps2/apps/mail-server"
+const BASE_DIR = process.env.OPENCODE_MAIL_DIR || join(process.env.HOME || "~", ".opencode", "mail-server")
 const CONFIG_FILE = join(BASE_DIR, "config.json")
 const SESSIONS_FILE = join(BASE_DIR, "sessions.json")
 const CACHE_DIR = join(BASE_DIR, "mail_cache")
