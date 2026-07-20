@@ -93,18 +93,12 @@ async function push(msg: string, sid?: string): Promise<boolean> {
   }
 }
 
-// Mail checker pushes into a *session* (may differ from current _sid).
-// Replicate tick()'s proven mechanism exactly: temporarily bind _sid to the
-// target session, then call the same push(msg) with no explicit sid.
-async function pushMailTo(msg: string, sessionId?: string): Promise<boolean> {
-  if (!sessionId) return push(msg)
-  const prev = _sid
-  _sid = sessionId
-  try {
-    return await push(msg)
-  } finally {
-    _sid = prev
-  }
+// Mail checker pushes into the session that is CURRENTLY active (where the user
+// is reading), exactly like tick()/nag() do — they always push to `_sid` with no
+// explicit sid. Do NOT push to the mailbox's own session id, or the event lands
+// in a different (inactive) session and the user never sees it.
+async function pushMailTo(msg: string, _sessionId?: string): Promise<boolean> {
+  return push(msg)
 }
 
 // ── When parsing ────────────────────────────────────────────────────────
