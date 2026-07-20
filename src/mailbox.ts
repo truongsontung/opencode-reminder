@@ -324,6 +324,22 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
             }
             // If label is set, search all emails in that label (no TO filter)
 
+            // Add SINCE filter if we have a last_check timestamp
+            // This prevents processing old emails on restart
+            if (session.last_check) {
+              const lastCheckDate = new Date(session.last_check)
+              // IMAP SINCE format: dd-Mon-yyyy
+              const since = lastCheckDate.toISOString().split('T')[0] // YYYY-MM-DD
+              if (since) {
+                const [year, month, day] = since.split('-')
+                const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+                const monthIdx = parseInt(month || '1') - 1
+                const imapDate = `${day}-${months[monthIdx]}-${year}`
+                searchQuery.since = imapDate
+                console.log(`[mail-checker] Session ${sessionId}: searching emails since ${imapDate}`)
+              }
+            }
+
             const searchResult = await client.search(searchQuery, { uid: true })
             if (!searchResult || searchResult.length === 0) continue
 
