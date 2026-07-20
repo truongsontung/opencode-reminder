@@ -6,6 +6,7 @@
 
 import { ImapFlow } from "imapflow"
 import nodemailer from "nodemailer"
+import { convert } from "html-to-text"
 import { randomBytes } from "crypto"
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "fs"
 import { join } from "path"
@@ -432,13 +433,46 @@ export function startMailChecker(
                 }
               }
 
-              // Extract body (simplified)
+              // Extract body — try HTML first, fall back to plain text
               const bodyMatch = emailContent.match(/\r?\n\r?\n([\s\S]*)$/)
-              let body = bodyMatch?.[1] || "(no body)"
-              if (body.length > 1500) body = body.slice(0, 1500) + "\n...(truncated)"
+              const rawBody = bodyMatch?.[1] || ""
+              let body = ""
+              if (rawBody.includes("<")) {
+                // HTML email — convert to clean text
+                body = convert(rawBody, {
+                  wordwrap: false,
+                  selectors: [
+                    { selector: "a", options: { ignoreHref: true } },
+                    { selector: "img", format: "skip" },
+                  ],
+                })
+              } else {
+                body = rawBody
+              }
+              // Strip MIME boundaries and trailing garbage
+              body = body.replace(/----==_mimepart[\s\S]*$/g, "").trim()
+              if (body.length > 2000) body = body.slice(0, 2000) + "\n...(truncated)"
 
-              // Format event
-              const eventLabel = `!ev mail:From: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${date}\n\n${body}`
+              // Extract repo/PR from subject if GitHub email
+              const repoMatch = subject.match(/\[(.+?)\]/)
+              const repo = repoMatch?.[1] || ""
+              const prMatch = subject.match(/#(\d+)/)
+              const prNum = prMatch?.[1] || ""
+
+              // Clean from field — extract username only
+              const fromUser = from.match(/^"?(.+?)"?\s*</)?.[1] || from.replace(/<.*>/, "").trim()
+
+              // Format clean event
+              const eventLabel = [
+                `!ev mail:`,
+                `from: ${fromUser}`,
+                repo ? `repo: ${repo}` : "",
+                prNum ? `pr: #${prNum}` : "",
+                `subject: ${subject.replace(/\[.+\]\s*/, "")}`,
+                `date: ${date}`,
+                "",
+                body,
+              ].filter(Boolean).join("\n")
 
               // Push into session's inline prompt directly
               // NOTE: Do NOT write to reminder file - it causes duplicate push by tick cycle
