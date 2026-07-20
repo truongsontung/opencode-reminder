@@ -414,6 +414,18 @@ export function startMailChecker(
               const subject = subjectMatch?.[1] || "(no subject)"
               const date = dateMatch?.[1] || ""
 
+              // Post-filter: skip emails received BEFORE this mailbox was created.
+              // IMAP SINCE only filters by date (no time), so a mailbox created at
+              // 08:25 would still fetch same-day 07:00 emails. This catches them.
+              if (session.last_check && date) {
+                const emailDate = new Date(date)
+                const lastCheckDate = new Date(session.last_check)
+                if (!isNaN(emailDate.getTime()) && emailDate < lastCheckDate) {
+                  processed.add(String(uid))
+                  continue
+                }
+              }
+
               // Extract body (simplified)
               const bodyMatch = emailContent.match(/\r?\n\r?\n([\s\S]*)$/)
               let body = bodyMatch?.[1] || "(no body)"
