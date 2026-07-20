@@ -16,6 +16,7 @@ const BASE_DIR = "/home/vps2/apps/mail-server"
 const CONFIG_FILE = join(BASE_DIR, "config.json")
 const SESSIONS_FILE = join(BASE_DIR, "sessions.json")
 const CACHE_DIR = join(BASE_DIR, "mail_cache")
+const HEARTBEAT_FILE = join(BASE_DIR, "mail_heartbeat.json")
 const STATE_DIR = process.env.OPENCODE_REMINDERS_DIR || `${process.env.HOME}/.local/share/opencode-reminders`
 
 export interface MailboxConfig {
@@ -260,6 +261,17 @@ export function mailboxTestConnection(): string {
 
 let mailCheckerTimer: any = null
 
+function updateHeartbeat(status: "running" | "idle" | "error", sessionId?: string) {
+  const heartbeat = {
+    status,
+    last_ping: new Date().toISOString(),
+    session_id: sessionId || null,
+  }
+  try {
+    writeFileSync(HEARTBEAT_FILE, JSON.stringify(heartbeat))
+  } catch {}
+}
+
 export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<boolean>) {
   if (mailCheckerTimer) return
 
@@ -272,7 +284,12 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
     const sessions = loadSessions()
     const activeSessions = Object.entries(sessions).filter(([, s]) => s.active)
 
-    if (activeSessions.length === 0) return
+    if (activeSessions.length === 0) {
+      updateHeartbeat("idle")
+      return
+    }
+
+    updateHeartbeat("running")
 
     let client: ImapFlow | null = null
     try {
@@ -416,7 +433,10 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
       }
 
       saveSessions(sessions)
-    } catch {} finally {
+      updateHeartbeat("idle")
+    } catch {
+      updateHeartbeat("error")
+    } finally {
       if (client) await client.logout().catch(() => {})
     }
   }
