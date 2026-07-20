@@ -1,97 +1,76 @@
 # opencode-reminders
 
-Personal reminders for [opencode](https://github.com/anomalyco/opencode). Schedule a
-note and it wakes your session when it is due — the reminder is injected as a message
-into the exact session that created it.
+> Personal reminder & mailbox plugin for [OpenCode](https://opencode.ai) — schedule
+> notes that wake your session when they are due, plus a per-session Gmail mailbox
+> that injects incoming mail directly into the active session.
 
-## Install
+`opencode-reminders` is an OpenCode plugin that turns reminders into first-class
+citizens of your agent session. Instead of relying on the OS or an external
+cron, reminders live **inside** the session that created them: they fire by
+pushing a prompt into exactly the right session, keep firing while the session
+is alive (even when detached/backgrounded), survive restarts, and retry on
+delivery failure.
+
+---
+
+## ✨ Features
+
+- **Session-scoped reminders** — each reminder is bound to the session that
+  created it and wakes *that* session (never a neighbour).
+- **Fire-and-forget scheduling** — relative, absolute, daily, weekly and
+  interval schedules via a tiny natural-language `when` parser.
+- **Resilient delivery** — a tick loop (60 s) pushes due reminders; a nag loop
+  (3 min) re-pushes overdue ones until acknowledged with `reminder_done`.
+- **Persistence** — reminders are saved to `<session>.reminder.json` on every
+  state change, so they survive session restarts and resume automatically.
+- **Per-session mailbox** — Gmail *plus addressing* (`you+<code>@gmail.com`)
+  gives every session a unique address. IMAP polling injects new mail as a
+  `!ev mail:` prompt into the active session.
+- **Outbound mail** — send email straight from the session mailbox via SMTP.
+- **Live monitor friendly** — a heartbeat file and `life_monitor.py` surface
+  reminder state, overdue alerts, and mailbox health on an 80-column TUI.
+
+---
+
+## 📦 Installation
+
+```bash
+git clone <repo-url> opencode-reminders
+cd opencode-reminders
+bun install        # or: npm install
+```
+
+The plugin entry point is `src/index.ts` (declared in `package.json` → `exports`).
 
 ```json
 {
-  "plugin": ["/home/vps2/opencode-reminders/src/index.ts"]
+  "plugins": {
+    "opencode-reminders": {
+      "path": "<path-to>/opencode-reminders"
+    }
+  }
 }
 ```
 
-## Tools
+---
 
-### Reminder Tools
+## ⚙️ Configuration
 
-| Tool              | Purpose                                                                     |
-| ----------------- | --------------------------------------------------------------------------- |
-| `reminder_add`    | Tạo nhắc (`when` + `label`).                                               |
-| `reminder_list`   | Liệt kê nhắc. Trạng thái: ⏰ idle, 🔔 due, 🔔 overdue.                    |
-| `reminder_done`   | Xác nhận done. One-time → xóa; lặp → kỳ kế.                              |
-| `reminder_del`    | Xóa nhắc vĩnh viễn.                                                        |
-| `reminder_start`  | Khởi chạy clock tick (60s) + nag (3ph).                                     |
-| `reminder_verbose`| Bật/tắt log debug (`on`/`off`).                                            |
+The plugin reads two optional environment variables:
 
-### Mailbox Tools
+| Variable                   | Default                                  | Description                                  |
+| -------------------------- | ---------------------------------------- | -------------------------------------------- |
+| `OPENCODE_REMINDERS_DIR`   | `~/.local/share/opencode-reminders`      | Directory for `<sid>.reminder.json` storage. |
+| `OPENCODE_REMINDERS_TICK_MS` | `60000`                               | Tick interval in milliseconds (min `>0`).    |
 
-Tất cả mailbox tools dùng `_sid` hiện tại (session đang active), không cần truyền session_id.
-
-| Tool                     | Purpose                                                                     |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `reminder_mailbox_start` | Tạo mailbox cho session hiện tại, trả địa chỉ email (Gmail plus addressing).|
-| `reminder_mailbox_stop`  | Tạm dừng nhận email cho session hiện tại.                                   |
-| `reminder_mailbox_delete`| Xoá mailbox + cache vĩnh viễn.                                             |
-| `reminder_mailbox_status`| Xem trạng thái mailbox session hiện tại.                                    |
-| `reminder_mailbox_send`  | Gửi email từ mailbox session hiện tại.                                      |
-| `reminder_mailbox_test`  | Test kết nối Gmail SMTP/IMAP.                                              |
-
-## `when` syntax
-
-| Form          | Ý nghĩa                         | Lặp  |
-| ------------- | ------------------------------- | ---- |
-| `in 2m`       | 2 phút nữa                      | không|
-| `in 1h`       | 1 giờ nữa                       | không|
-| `14:30`       | lần tới 14:30                   | không|
-| `daily 09:00` | mỗi ngày 09:00                  | có   |
-| `mon 09:00`   | mỗi thứ 2 09:00                 | có   |
-| `every 90m`   | mỗi 90 phút                     | có   |
-| `every 2h`    | mỗi 2 giờ                       | có   |
-
-## State machine: idle → due → overdue
-
-```
-idle  ──[scheduler: now >= nextAt]──> due
-due   ──[tick: push remind OK]──> overdue
-due   ──[tick: push remind FAIL]──> due (tick sau retry)
-overdue ──[nag: push resum]──> overdue (giữ đến khi done)
-any   ──[reminder_done]──> idle (repeat) hoặc xóa (none)
-```
-
-### Components
-
-| Component | Nhiệm vụ | Dùng gì |
-|-----------|----------|---------|
-| **scheduler** | Chuyển idle → due khi đến hạn | Chỉ đọc `nextAt` |
-| **tick** (60s) | Push remind khi state = due | Chỉ đọc `state` |
-| **nag** (3ph) | Push resum khi state = overdue | Chỉ đọc `state` |
-
-`nextAt` chỉ là data trong JSON — **không dùng để quyết định push**.
-
-### Định dạng thông điệp
-
-| Loại    | Format                                                          |
-| ------- | --------------------------------------------------------------- |
-| remind  | `!ev remind: reminder <id> <label> @<time> — gọi reminder_done`|
-| resum   | `!ev resum: reminder <id> <label> @<time> (trễ Xm) — gọi reminder_done`|
-
-## Mailbox Feature
-
-Mailbox cho phép session nhận email từ bên ngoài. Plugin tự poll Gmail IMAP và inject
-`!ev mail:` event vào session khi có email mới.
-
-### Setup
-
-1. Tạo Gmail App Password tại [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
-
-2. Cấu hình `/home/vps2/apps/mail-server/config.json`:
+Mailbox settings live in `<MAIL_DIR>/config.json` (default `<MAIL_DIR>` is
+`/home/vps2/apps/mail-server`, hardcoded in `src/mailbox.ts`; auto-created with
+defaults on first run):
 
 ```json
 {
   "gmail": {
-    "email": "your-email@gmail.com",
+    "email": "you@gmail.com",
     "app_password": "xxxx xxxx xxxx xxxx",
     "imap_host": "imap.gmail.com",
     "imap_port": 993,
@@ -101,85 +80,158 @@ Mailbox cho phép session nhận email từ bên ngoài. Plugin tự poll Gmail 
   "checker": {
     "interval_seconds": 30,
     "max_emails_per_check": 50,
-    "label": "GitHub",
-    "search_mode": "label",
+    "label": "",
+    "search_mode": "to",
     "initial_sync": "skip_all"
   }
 }
 ```
 
-### Tạo Mailbox
+> `app_password` is a Gmail **App Password**, not your account password.
+> The checker only processes the mailbox that belongs to the currently active
+> session, so a stale/foreign session is never pushed into.
+
+---
+
+## 🛠️ Tools
+
+All tools are exposed to the agent under the `reminder_*` namespace.
+
+### Reminders
+
+| Tool                  | Description                                                                 |
+| --------------------- | --------------------------------------------------------------------------- |
+| `reminder_add`        | Add/update a reminder. `when`: `HH:MM` · `in <N>m\|h\|s` · `daily HH:MM` · `<dow> HH:MM` · `every <N>m\|h`. Optional `id` to update in place. |
+| `reminder_list`       | List all reminders with state (`⏰ idle`, `🔔 due`, `🔔 overdue`).          |
+| `reminder_done`       | Acknowledge. One-time → deleted; repeating → advanced to next occurrence.   |
+| `reminder_del`        | Delete a reminder permanently.                                              |
+| `reminder_start`      | Start the tick + nag loops if not already running.                          |
+| `reminder_verbose`    | Toggle per-cycle debug logging (`on`/`off`).                                |
+
+**Examples**
+
+```
+reminder_add  label="Stand up"  when="daily 09:00"
+reminder_add  label="Check build"  when="in 30m"
+reminder_add  label="Weekly sync"  when="mon 10:30"
+reminder_add  label="Ping me"  when="every 15m"
+reminder_add  label="Fix later"  when="14:30"  id="r-7"
+reminder_done id="r-7"
+```
+
+When a reminder fires, the session receives:
+
+```
+!ev remind: reminder <id> <label> @<time> — gọi reminder_done
+```
+
+Repeating reminders that were not acknowledged are re-pushed every 3 minutes
+with `!ev resum: ...` until `reminder_done` is called.
+
+### Mailbox
+
+| Tool                       | Description                                                  |
+| -------------------------- | ------------------------------------------------------------ |
+| `reminder_mailbox_start`   | Create/reactivate a mailbox for the current session. Returns the `you+<code>@gmail.com` address. |
+| `reminder_mailbox_stop`    | Pause receiving mail for the current session.                |
+| `reminder_mailbox_delete`  | Delete the session mailbox (and its cache) permanently.      |
+| `reminder_mailbox_status`  | Show mailbox status / stats.                                 |
+| `reminder_mailbox_send`    | Send email from the session mailbox (`to`, `subject`, `body`).|
+| `reminder_mailbox_test`    | Verify Gmail SMTP/IMAP credentials are configured.           |
+
+Incoming mail is injected as:
+
+```
+!ev mail:From: <from>
+To: <to>
+Subject: <subject>
+Date: <date>
+
+<body>
+```
+
+---
+
+## 🧠 Architecture
+
+```
+src/
+├── index.ts     # Plugin entry: tools, tick/nag loops, lifecycle, persistence
+├── when.ts      # Pure "when" expression parser + next-fire calculator
+├── store.ts     # Reminder model, due/advance/describe helpers, id generator
+└── mailbox.ts   # Gmail mailbox mgmt + IMAP polling + SMTP send + heartbeat
+```
+
+### State machine
+
+```
+        ┌─────────┐   now ≥ nextAt   ┌──────┐   push ok   ┌──────────┐
+        │  idle   │ ───────────────► │ due  │ ───────────► │ overdue  │
+        └─────────┘                  └──────┘             └──────────┘
+                                          │ push fails            │
+                                          └──── retry next tick ──┘
+                                                               │
+                                            reminder_done      │
+                                          ┌────────────────────┘
+                                          ▼
+                                   one-time → deleted
+                                   repeat  → next occurrence (idle)
+```
+
+- **tick()** runs every `TICK_MS`, flips `idle → due`, pushes due reminders,
+  and persists state. On push failure the reminder stays `due` and is retried
+  on the next tick.
+- **nag()** runs every 3 minutes and re-pushes anything still `overdue`.
+- **Persistence** — `<sid>.reminder.json` is rewritten on every transition, so
+  a session restart reloads reminders and (if any remain) restarts the loops.
+
+### `when` grammar
+
+| Input              | Meaning                                  |
+| ------------------ | ---------------------------------------- |
+| `in 30m` / `in 2h` | Once, `now + duration`.                  |
+| `14:30`            | Once, next occurrence of that clock time.|
+| `daily 09:00`      | Every day at 09:00.                      |
+| `mon 10:30`        | Every Monday at 10:30.                   |
+| `every 15m`        | Repeating interval (min 1 minute).       |
+
+Durations support `s`, `m`, `h`, `d` and may be combined (`in 1h30m`).
+
+---
+
+## 🧪 Development
 
 ```bash
-# Tạo mailbox (dùng _sid hiện tại, không cần truyền session_id)
-reminder_mailbox_start --name "GitHub" --gmail_label "GitHub"
+bun install          # install deps
+bun test             # run unit + integration tests
+npm run typecheck    # tsc --noEmit
 ```
 
-Kết quả:
-```json
-{
-  "status": "created",
-  "session_id": "ses_xxx",
-  "mailbox": "your-email+abc123@gmail.com",
-  "gmail_label": "GitHub"
-}
-```
+The `when` parser and store helpers are **pure** (they take an explicit `now`
+in epoch ms), so they are fully deterministic and unit-testable without a real
+clock — see `test/when.test.ts` and `test/store.test.ts`.
 
-### Mailbox per Session
+---
 
-Mỗi session có thể có label Gmail riêng. Session ID tự động lấy từ `_sid` hiện tại:
+## 🚀 Getting Started (first-run guide)
+
+New to the plugin? Read **[SETUP.md](./SETUP.md)** for a step-by-step
+Vietnamese walkthrough: creating `config.json`, generating a Gmail App
+Password, starting the mailbox, and initializing your first reminders.
+
+Quick start:
 
 ```bash
-# Session A: check label "GitHub" (chạy trong session A)
-reminder_mailbox_start --name "GitHub" --gmail_label "GitHub"
-
-# Session B: check label "Bounty" (chạy trong session B)
-reminder_mailbox_start --name "Bounty" --gmail_label "Bounty"
-```
-
-### Workflow
-
-```
-1. Session tạo mailbox → nhận địa chỉ email (Gmail plus addressing)
-2. Mail checker poll IMAP mỗi 30s, chỉ xử lý mailbox khớp _sid hiện tại
-3. Email mới đến (SAU thời điểm tạo mailbox) → inject !ev mail: event vào session
-4. Session nhận event, xử lý email
-```
-
-### Initial Sync
-
-Khi tạo mailbox lần đầu, `initial_sync: "skip_all"` sẽ đánh dấu toàn bộ email
-hiện có trong label là "đã xử lý" mà không push. Chỉ email MỚI (sau thời điểm
-tạo) mới được push. Sau restart, SINCE filter (dựa trên `last_check`) chỉ lấy
-email mới — không bao giờ push lại email cũ.
-
-Post-filter kiểm tra header `Date` của mail so với `last_check` timestamp để
-đảm bảo chính xác đến giờ (IMAP SINCE chỉ lọc theo ngày).
-
-### Event Format
-
-```bash
-!ev mail:From: sender@example.com
-To: your-email+abc123@gmail.com
-Subject: New bounty available
-Date: Mon, 20 Jul 2026 10:00:00 +0700
-
-[Email body content here...]
-```
-
-## Persist
-
-```
-~/.local/share/opencode-reminders/<sessionID>.reminder.json
-```
-
-Override: `OPENCODE_REMINDERS_DIR=/path/to/dir`
-
-Fields: `{id, label, nextAt, repeat, hour, minute, dow?, intervalMs?, state}`
-
-## Develop
-
-```sh
 bun install
-bun test
+mkdir -p <MAIL_DIR>   # write config.json with gmail credentials (default: /home/vps2/apps/mail-server)
+# In OpenCode:
+reminder_mailbox_test      # verify config
+reminder_mailbox_start     # create mailbox → you+<code>@gmail.com
+reminder_add when="in 5m" label="Test"   # first reminder auto-starts the loop
 ```
+
+---
+
+## 📄 License
+
+MIT
