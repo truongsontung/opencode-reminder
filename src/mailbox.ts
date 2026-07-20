@@ -11,6 +11,26 @@ import { randomBytes } from "crypto"
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "fs"
 import { join } from "path"
 
+// ── RFC 2047 decoder ───────────────────────────────────────────────────
+// Decodes encoded words like =?UTF-8?Q?Re:_[repo]?= or =?UTF-8?B?base64?=
+
+function decodeRFC2047(text: string): string {
+  return text.replace(/=\?([^?]+)\?([qQBb])\?([^?]+)\?=/gi, (_, charset, encoding, encoded) => {
+    try {
+      if (encoding.toUpperCase() === "B") {
+        return Buffer.from(encoded, "base64").toString("utf-8")
+      }
+      // Q encoding (quoted-printable)
+      const decoded = encoded
+        .replace(/_/g, " ")
+        .replace(/=([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      return decoded
+    } catch {
+      return encoded
+    }
+  })
+}
+
 // ── Config ──────────────────────────────────────────────────────────────
 
 const BASE_DIR = "/home/vps2/apps/mail-server"
@@ -413,12 +433,14 @@ export function startMailChecker(
               const emailContent = msg.source.toString()
               const fromMatch = emailContent.match(/^From:\s*(.+)/im)
               const toMatch = emailContent.match(/^To:\s*(.+)/im)
-              const subjectMatch = emailContent.match(/^Subject:\s*(.+)/im)
               const dateMatch = emailContent.match(/^Date:\s*(.+)/im)
+
+              // Subject may span multiple lines (RFC 2047 encoded)
+              const subjectRaw = emailContent.match(/^Subject:\s*([\s\S]*?)(?=\r?\n(?!\s)|$)/im)
+              const subject = decodeRFC2047(subjectRaw?.[1]?.replace(/\r?\n\s+/g, "") || "(no subject)")
 
               const from = fromMatch?.[1] || "unknown"
               const to = toMatch?.[1] || ""
-              const subject = subjectMatch?.[1] || "(no subject)"
               const date = dateMatch?.[1] || ""
 
               // Post-filter: skip emails received BEFORE this mailbox was created.
