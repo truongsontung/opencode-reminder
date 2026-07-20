@@ -27,14 +27,16 @@ into the exact session that created it.
 
 ### Mailbox Tools
 
-| Tool                     | Purpose                                        |
-| ------------------------ | ---------------------------------------------- |
-| `reminder_mailbox_start` | Tạo mailbox cho session, trả địa chỉ email.   |
-| `reminder_mailbox_stop`  | Tạm dừng nhận email.                           |
-| `reminder_mailbox_delete`| Xoá mailbox vĩnh viễn.                        |
-| `reminder_mailbox_status`| Xem trạng thái mailbox.                        |
-| `reminder_mailbox_send`  | Gửi email từ mailbox.                         |
-| `reminder_mailbox_test`  | Test kết nối Gmail SMTP/IMAP.                 |
+Tất cả mailbox tools dùng `_sid` hiện tại (session đang active), không cần truyền session_id.
+
+| Tool                     | Purpose                                                                     |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `reminder_mailbox_start` | Tạo mailbox cho session hiện tại, trả địa chỉ email (Gmail plus addressing).|
+| `reminder_mailbox_stop`  | Tạm dừng nhận email cho session hiện tại.                                   |
+| `reminder_mailbox_delete`| Xoá mailbox + cache vĩnh viễn.                                             |
+| `reminder_mailbox_status`| Xem trạng thái mailbox session hiện tại.                                    |
+| `reminder_mailbox_send`  | Gửi email từ mailbox session hiện tại.                                      |
+| `reminder_mailbox_test`  | Test kết nối Gmail SMTP/IMAP.                                              |
 
 ## `when` syntax
 
@@ -98,7 +100,10 @@ Mailbox cho phép session nhận email từ bên ngoài. Plugin tự poll Gmail 
   },
   "checker": {
     "interval_seconds": 30,
-    "max_emails_per_check": 50
+    "max_emails_per_check": 50,
+    "label": "GitHub",
+    "search_mode": "label",
+    "initial_sync": "skip_all"
   }
 }
 ```
@@ -106,11 +111,8 @@ Mailbox cho phép session nhận email từ bên ngoài. Plugin tự poll Gmail 
 ### Tạo Mailbox
 
 ```bash
-# Tạo mailbox check INBOX
-reminder_mailbox_start --session ses_xxx --name "My Mail"
-
-# Tạo mailbox check label cụ thể
-reminder_mailbox_start --session ses_xxx --name "GitHub" --gmail_label "GitHub"
+# Tạo mailbox (dùng _sid hiện tại, không cần truyền session_id)
+reminder_mailbox_start --name "GitHub" --gmail_label "GitHub"
 ```
 
 Kết quả:
@@ -125,24 +127,34 @@ Kết quả:
 
 ### Mailbox per Session
 
-Mỗi session có thể có label Gmail riêng:
+Mỗi session có thể có label Gmail riêng. Session ID tự động lấy từ `_sid` hiện tại:
 
 ```bash
-# Session 1: check label "GitHub"
-reminder_mailbox_start --session ses_001 --name "GitHub" --gmail_label "GitHub"
+# Session A: check label "GitHub" (chạy trong session A)
+reminder_mailbox_start --name "GitHub" --gmail_label "GitHub"
 
-# Session 2: check label "Bounty"
-reminder_mailbox_start --session ses_002 --name "Bounty" --gmail_label "Bounty"
+# Session B: check label "Bounty" (chạy trong session B)
+reminder_mailbox_start --name "Bounty" --gmail_label "Bounty"
 ```
 
 ### Workflow
 
 ```
-1. Session tạo mailbox → nhận địa chỉ email
-2. Mail checker poll IMAP mỗi 30s
-3. Email mới đến → inject !ev mail: event vào session
+1. Session tạo mailbox → nhận địa chỉ email (Gmail plus addressing)
+2. Mail checker poll IMAP mỗi 30s, chỉ xử lý mailbox khớp _sid hiện tại
+3. Email mới đến (SAU thời điểm tạo mailbox) → inject !ev mail: event vào session
 4. Session nhận event, xử lý email
 ```
+
+### Initial Sync
+
+Khi tạo mailbox lần đầu, `initial_sync: "skip_all"` sẽ đánh dấu toàn bộ email
+hiện có trong label là "đã xử lý" mà không push. Chỉ email MỚI (sau thời điểm
+tạo) mới được push. Sau restart, SINCE filter (dựa trên `last_check`) chỉ lấy
+email mới — không bao giờ push lại email cũ.
+
+Post-filter kiểm tra header `Date` của mail so với `last_check` timestamp để
+đảm bảo chính xác đến giờ (IMAP SINCE chỉ lọc theo ngày).
 
 ### Event Format
 
