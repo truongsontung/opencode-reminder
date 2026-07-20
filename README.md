@@ -1,15 +1,36 @@
 # opencode-reminders
 
-> Personal reminder & mailbox plugin for [OpenCode](https://opencode.ai) — schedule
-> notes that wake your session when they are due, plus a per-session Gmail mailbox
-> that injects incoming mail directly into the active session.
+> **Give your agent a life of its own.**
+> An autonomous memory + circadian system for [OpenCode](https://opencode.ai) —
+> so your agent doesn't just wait to be told what to do. It remembers, it shows
+> up on time, it reads its mail, and it keeps working whether you're watching or not.
 
-`opencode-reminders` is an OpenCode plugin that turns reminders into first-class
-citizens of your agent session. Instead of relying on the OS or an external
-cron, reminders live **inside** the session that created them: they fire by
-pushing a prompt into exactly the right session, keep firing while the session
-is alive (even when detached/backgrounded), survive restarts, and retry on
-delivery failure.
+## Why this exists
+
+Most AI agents are **amnesiac interns**: brilliant while you watch, useless the
+moment you look away. Close the terminal and they forget every commitment.
+Reopen it and they start from zero, blank-eyed, waiting for orders.
+
+`opencode-reminders` changes that. It gives the agent something close to a
+**lifecycle** — a sense of time, obligation, and continuity:
+
+- ⏰ **It remembers what it promised.** A reminder isn't a note you set — it's a
+  commitment the agent made to *itself*, persisted to disk and bound to the exact
+  session that owns it.
+- 🌅 **It has a routine.** Daily stand-ups, weekly syncs, "ping me every 15
+  minutes" — the agent builds a rhythm, like a working professional.
+- 🔔 **It wakes itself up.** When a reminder is due, it's pushed *into* the
+  session as a prompt — no cron, no OS ties, no human in the loop. Due but you
+  didn't ack? It nudges itself every 3 minutes until the job is done.
+- 📬 **It reads and answers its mail.** A private Gmail mailbox per session means
+  the outside world can reach the agent directly — and it can reply.
+- 🔁 **It survives.** Detach the session, lose the SSH connection, reboot the
+  machine — reminders are reloaded on restart and resume firing. The agent picks
+  up its life where it left off.
+
+In short: this plugin turns a reactive chatbot into a **persistent, scheduled,
+self-driven worker** — one that shows up, does the recurring task, and never
+drops a commitment just because you stopped staring at the screen.
 
 ---
 
