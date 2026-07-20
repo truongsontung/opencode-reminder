@@ -21,7 +21,7 @@ import json
 REFRESH = 5
 MARK_INTERVAL = 300
 ALERT_IDLE = 600
-LOG_FILE = "/home/vps2/life_monitor.log"
+LOG_FILE = os.path.expanduser("~/.opencode/life_monitor.log")
 
 _scr = None
 _scr_h = 0
@@ -176,7 +176,7 @@ def get_reminders():
     Mỗi file <sessionID>.reminder.json chứa [ {id,label,nextAt,repeat,...} ].
     Chỉ lấy session CÓ TRONG get_live_session_ids() (đang mở thật sự)."""
     import glob as _glob
-    base = "/home/vps2/.local/share/opencode-reminders"
+    base = os.environ.get("OPENCODE_REMINDERS_DIR") or os.path.expanduser("~/.local/share/opencode-reminders")
     live = get_live_session_ids()
     now = int(time.time() * 1000)
     groups = {}
@@ -261,14 +261,15 @@ def get_live_session_ids():
     import glob as _glob
     now = time.time()
     live = set()
-    for f in _glob.glob("/home/vps2/.local/share/agent-teamwork/scheduler/*.cal.json"):
+    base = os.environ.get("OPENCODE_REMINDERS_DIR") or os.path.expanduser("~/.local/share/opencode-reminders")
+    for f in _glob.glob(os.path.expanduser("~/.local/share/agent-teamwork/scheduler/*.cal.json")):
         try:
             if os.path.getmtime(f) > now - 90:  # 90s = 1.5 tick
                 live.add(os.path.basename(f)[: -len(".cal.json")])
         except Exception:
             pass
     # Plugin reminder: mỗi session alive ghi <sid>.reminder.json mỗi tick (60s).
-    for f in _glob.glob("/home/vps2/.local/share/opencode-reminders/*.reminder.json"):
+    for f in _glob.glob(os.path.join(base, "*.reminder.json")):
         try:
             if os.path.getmtime(f) > now - 90:  # 90s = 1.5 tick
                 live.add(os.path.basename(f)[: -len(".reminder.json")])
@@ -285,7 +286,7 @@ def get_teamwork_reminders():
     Chỉ lấy session CÓ TRONG get_live_session_ids() (đang mở thật sự, tick
     ghi file gần đây). Session đã tắt bị lọc, tránh OVERDUE giả."""
     import glob as _glob
-    base = "/home/vps2/.local/share/agent-teamwork/scheduler"
+    base = os.path.expanduser("~/.local/share/agent-teamwork/scheduler")
     live = get_live_session_ids()
     out = []
     try:
@@ -314,7 +315,10 @@ def get_teamwork_reminders():
 
 def get_mail_heartbeat():
     """Đọc mail heartbeat từ mail checker plugin."""
-    heartbeat_file = "/home/vps2/apps/mail-server/mail_heartbeat.json"
+    heartbeat_file = os.path.join(
+        os.environ.get("OPENCODE_MAIL_DIR") or os.path.expanduser("~/.opencode/mail-server"),
+        "mail_heartbeat.json"
+    )
     try:
         with open(heartbeat_file) as f:
             data = json.load(f)
