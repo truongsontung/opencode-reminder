@@ -15,7 +15,7 @@ import { join } from "path"
 // Decodes encoded words like =?UTF-8?Q?Re:_[repo]?= or =?UTF-8?B?base64?=
 
 function decodeRFC2047(text: string): string {
-  return text.replace(/=\?([^?]+)\?([qQBb])\?([^?]+)\?=/gi, (_, charset, encoding, encoded) => {
+  return text.replace(/=\?([^?]+)\?([qQBb])\?([^?]+)\?=/gi, (_: string, charset: string, encoding: string, encoded: string) => {
     try {
       if (encoding.toUpperCase() === "B") {
         return Buffer.from(encoded, "base64").toString("utf-8")
@@ -23,7 +23,7 @@ function decodeRFC2047(text: string): string {
       // Q encoding (quoted-printable)
       const decoded = encoded
         .replace(/_/g, " ")
-        .replace(/=([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/=([0-9A-F]{2})/gi, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16)))
       return decoded
     } catch {
       return encoded
