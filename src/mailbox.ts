@@ -150,7 +150,9 @@ export function mailboxStart(args: { session_id: string; name?: string; gmail_la
     active: true,
     created_at: now,
     stopped_at: null,
-    last_check: null,
+    // Set last_check now so subsequent restarts load new mail via SINCE
+    // instead of re-applying skip_all on the whole mailbox.
+    last_check: now,
     emails_received: 0,
     last_email_at: null,
   }
@@ -367,16 +369,18 @@ export function startMailChecker(
             let newCount = 0
             const maxCheck = config.checker.max_emails_per_check
 
-            // Handle initial sync: if cache is empty, apply initial_sync behavior
-            const isFirstRun = processed.size === 0
+            // First run = cache empty AND never checked before (no last_check).
+            // After mailbox_start sets last_check=now, restarts keep loading mail
+            // via the SINCE filter instead of re-skipping everything.
+            const isFirstRun = processed.size === 0 && !session.last_check
             const initialSync = config.checker?.initial_sync || "skip_all"
 
             if (isFirstRun && initialSync === "skip_all") {
-              // First run: mark ALL existing emails as processed without injecting events
+              // First run only: mark existing emails as processed without injecting.
               for (const uid of searchResult) {
                 processed.add(String(uid))
               }
-              // Save cache immediately
+              // Save cache immediately so a restart won't re-skip.
               cache.processed_ids = [...processed]
               saveCache(sessionId, cache)
               continue
