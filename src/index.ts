@@ -93,12 +93,19 @@ async function push(msg: string, sid?: string): Promise<boolean> {
   }
 }
 
-// Mail checker pushes into the session that is CURRENTLY active (where the user
-// is reading), exactly like tick()/nag() do — they always push to `_sid` with no
-// explicit sid. Do NOT push to the mailbox's own session id, or the event lands
-// in a different (inactive) session and the user never sees it.
-async function pushMailTo(msg: string, _sessionId?: string): Promise<boolean> {
-  return push(msg)
+// Mail checker pushes into the session that OWNS this mailbox (created it via
+// reminder_mailbox_start). Replicate tick()'s proven mechanism exactly:
+// temporarily bind _sid to the mailbox's session, then call push(msg) with no
+// explicit sid — identical to how tick()/nag() inject events.
+async function pushMailTo(msg: string, sessionId?: string): Promise<boolean> {
+  if (!sessionId) return push(msg)
+  const prev = _sid
+  _sid = sessionId
+  try {
+    return await push(msg)
+  } finally {
+    _sid = prev
+  }
 }
 
 // ── When parsing ────────────────────────────────────────────────────────
@@ -412,15 +419,14 @@ const tools = {
   // ── Mailbox Tools ────────────────────────────────────────────────────
 
   reminder_mailbox_start: tool({
-    description: "Tạo mailbox mới cho session để nhận email. Trả địa chỉ email (Gmail plus addressing).",
+    description: "Tạo mailbox mới cho session ĐANG HOẠT ĐỘNG (dùng _sid hiện tại) để nhận email. Trả địa chỉ email (Gmail plus addressing).",
     args: {
-      session_id: tool.schema.string(),
       name: tool.schema.string().optional(),
       gmail_label: tool.schema.string().optional(),
     },
     async execute(args: any) {
-      if (!args?.session_id) return "! lỗi: thiếu session_id"
-      return mailboxStart({ session_id: args.session_id, name: args.name, gmail_label: args.gmail_label })
+      if (!_sid) return "! lỗi: chưa xác định được session hiện tại (_sid)"
+      return mailboxStart({ session_id: _sid, name: args?.name, gmail_label: args?.gmail_label })
     },
   }),
 
