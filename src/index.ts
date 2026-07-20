@@ -93,10 +93,9 @@ async function push(msg: string, sid?: string): Promise<boolean> {
   }
 }
 
-// Mail checker pushes into the session that OWNS this mailbox (created it via
-// reminder_mailbox_start). Replicate tick()'s proven mechanism exactly:
-// temporarily bind _sid to the mailbox's session, then call push(msg) with no
-// explicit sid — identical to how tick()/nag() inject events.
+// Mail checker pushes into a *session* (may differ from current _sid).
+// Replicate tick()'s proven mechanism exactly: temporarily bind _sid to the
+// target session, then call the same push(msg) with no explicit sid.
 async function pushMailTo(msg: string, sessionId?: string): Promise<boolean> {
   if (!sessionId) return push(msg)
   const prev = _sid
@@ -419,14 +418,15 @@ const tools = {
   // ── Mailbox Tools ────────────────────────────────────────────────────
 
   reminder_mailbox_start: tool({
-    description: "Tạo mailbox mới cho session ĐANG HOẠT ĐỘNG (dùng _sid hiện tại) để nhận email. Trả địa chỉ email (Gmail plus addressing).",
+    description: "Tạo mailbox mới cho session để nhận email. Trả địa chỉ email (Gmail plus addressing).",
     args: {
+      session_id: tool.schema.string(),
       name: tool.schema.string().optional(),
       gmail_label: tool.schema.string().optional(),
     },
     async execute(args: any) {
-      if (!_sid) return "! lỗi: chưa xác định được session hiện tại (_sid)"
-      return mailboxStart({ session_id: _sid, name: args?.name, gmail_label: args?.gmail_label })
+      if (!args?.session_id) return "! lỗi: thiếu session_id"
+      return mailboxStart({ session_id: args.session_id, name: args.name, gmail_label: args.gmail_label })
     },
   }),
 
