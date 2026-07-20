@@ -7,7 +7,7 @@
 import { ImapFlow } from "imapflow"
 import nodemailer from "nodemailer"
 import { randomBytes } from "crypto"
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs"
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "fs"
 import { join } from "path"
 
 // ── Config ──────────────────────────────────────────────────────────────
@@ -200,6 +200,12 @@ export function mailboxDelete(args: { session_id: string }): string {
   const mailbox = sessions[sessionId].address
   delete sessions[sessionId]
   saveSessions(sessions)
+
+  // Also delete cache file
+  try {
+    const cachePath = join(CACHE_DIR, `${sessionId}.json`)
+    unlinkSync(cachePath)
+  } catch {}
 
   return JSON.stringify({ status: "deleted", session_id: sessionId, mailbox })
 }
