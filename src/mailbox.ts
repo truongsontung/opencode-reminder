@@ -32,6 +32,7 @@ export interface MailboxConfig {
     max_emails_per_check: number
     label?: string
     search_mode?: "to" | "label" | "both"
+    initial_sync?: "skip_all" | "last_n" | "process_all"
   }
 }
 
@@ -329,8 +330,34 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
             let newCount = 0
             const maxCheck = config.checker.max_emails_per_check
 
+            // Handle initial sync: if cache is empty, apply initial_sync behavior
+            const isFirstRun = processed.size === 0
+            const initialSync = config.checker?.initial_sync || "skip_all"
+
+            if (isFirstRun && initialSync === "skip_all") {
+              // First run: mark ALL existing emails as processed without injecting events
+              console.log(`[mail-checker] First run for ${sessionId}: skipping ${searchResult.length} existing emails`)
+              for (const uid of searchResult) {
+                processed.add(String(uid))
+              }
+              // Save cache immediately
+              cache.processed_ids = [...processed]
+              saveCache(sessionId, cache)
+              continue
+            }
+
             for (const uid of searchResult.slice(-maxCheck)) {
               if (processed.has(String(uid))) continue
+
+              // First run with "last_n" mode: only process last N emails
+              if (isFirstRun && initialSync === "last_n") {
+                const allUids = searchResult.map(Number)
+                const lastN = allUids.slice(-10) // Last 10 emails
+                if (!lastN.includes(Number(uid))) {
+                  processed.add(String(uid)) // Skip older emails
+                  continue
+                }
+              }
 
               const msg = await client.fetchOne(uid, { source: true, envelope: true }, { uid: true })
               if (!msg || !msg.source) continue
