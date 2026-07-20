@@ -336,7 +336,6 @@ export function startMailChecker(pushFn: (msg: string, sid?: string) => Promise<
                 const monthIdx = parseInt(month || '1') - 1
                 const imapDate = `${day}-${months[monthIdx]}-${year}`
                 searchQuery.since = imapDate
-                console.log(`[mail-checker] Session ${sessionId}: searching emails since ${imapDate}`)
               }
             }
 
@@ -441,41 +440,4 @@ export function stopMailChecker() {
     clearInterval(mailCheckerTimer)
     mailCheckerTimer = null
   }
-}
-
-function injectMailEvent(sessionId: string, eventLabel: string) {
-  const reminderFile = join(STATE_DIR, `${sessionId}.reminder.json`)
-  let reminders: any[] = []
-
-  try {
-    reminders = JSON.parse(readFileSync(reminderFile, "utf8"))
-  } catch {
-    reminders = []
-  }
-
-  // Check for duplicate (same label in last 5 minutes)
-  const now = Date.now()
-  const recentDuplicate = reminders.find(r =>
-    r.label === eventLabel && now - (r.startAt || 0) < 300_000
-  )
-  if (recentDuplicate) return
-
-  // Add new event
-  const event = {
-    id: `mail-${randomBytes(6).toString("hex")}`,
-    label: eventLabel,
-    nextAt: now,
-    startAt: now,
-    repeat: null,
-    intervalMs: 0,
-    hour: 0,
-    minute: 0,
-    state: "idle",
-  }
-
-  reminders.push(event)
-
-  mkdirSync(STATE_DIR, { recursive: true })
-  writeFileSync(reminderFile, JSON.stringify(reminders, null, 2))
-  console.log(`[mail-checker] Injected event into ${sessionId}: ${event.id}`)
 }
