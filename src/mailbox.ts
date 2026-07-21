@@ -6,30 +6,10 @@
 
 import { ImapFlow } from "imapflow"
 import nodemailer from "nodemailer"
-import { convert } from "html-to-text"
+import { simpleParser } from "mailparser"
 import { randomBytes } from "crypto"
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "fs"
 import { join } from "path"
-
-// ── RFC 2047 decoder ───────────────────────────────────────────────────
-// Decodes encoded words like =?UTF-8?Q?Re:_[repo]?= or =?UTF-8?B?base64?=
-
-function decodeRFC2047(text: string): string {
-  return text.replace(/=\?([^?]+)\?([qQBb])\?([^?]+)\?=/gi, (_: string, charset: string, encoding: string, encoded: string) => {
-    try {
-      if (encoding.toUpperCase() === "B") {
-        return Buffer.from(encoded, "base64").toString("utf-8")
-      }
-      // Q encoding (quoted-printable)
-      const decoded = encoded
-        .replace(/_/g, " ")
-        .replace(/=([0-9A-F]{2})/gi, (_: string, hex: string) => String.fromCharCode(parseInt(hex, 16)))
-      return decoded
-    } catch {
-      return encoded
-    }
-  })
-}
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -429,19 +409,13 @@ export function startMailChecker(
               const msg = await client.fetchOne(uid, { source: true, envelope: true }, { uid: true })
               if (!msg || !msg.source) continue
 
-              // Parse email
-              const emailContent = msg.source.toString()
-              const fromMatch = emailContent.match(/^From:\s*(.+)/im)
-              const toMatch = emailContent.match(/^To:\s*(.+)/im)
-              const dateMatch = emailContent.match(/^Date:\s*(.+)/im)
+              // Parse email with mailparser (handles MIME, encoding, headers correctly)
+              const parsed = await simpleParser(msg.source.toString())
 
-              // Subject may span multiple lines (RFC 2047 encoded)
-              const subjectRaw = emailContent.match(/^Subject:\s*([\s\S]*?)(?=\r?\n(?!\s)|$)/im)
-              const subject = decodeRFC2047(subjectRaw?.[1]?.replace(/\r?\n\s+/g, "") || "(no subject)")
-
-              const from = fromMatch?.[1] || "unknown"
-              const to = toMatch?.[1] || ""
-              const date = dateMatch?.[1] || ""
+              const from = parsed.from?.text || "unknown"
+              const to = parsed.to?.text || ""
+              const date = parsed.date?.toISOString() || ""
+              const subject = parsed.subject || "(no subject)"
 
               // Post-filter: skip emails received BEFORE this mailbox was created.
               // IMAP SINCE only filters by date (no time), so a mailbox created at
@@ -455,24 +429,12 @@ export function startMailChecker(
                 }
               }
 
-              // Extract body — try HTML first, fall back to plain text
-              const bodyMatch = emailContent.match(/\r?\n\r?\n([\s\S]*)$/)
-              const rawBody = bodyMatch?.[1] || ""
-              let body = ""
-              if (rawBody.includes("<")) {
-                // HTML email — convert to clean text
-                body = convert(rawBody, {
-                  wordwrap: false,
-                  selectors: [
-                    { selector: "a", options: { ignoreHref: true } },
-                    { selector: "img", format: "skip" },
-                  ],
-                })
-              } else {
-                body = rawBody
+              // Get body — prefer text, fall back to html converted to text
+              let body = parsed.text || ""
+              if (!body && parsed.html) {
+                body = parsed.html
               }
-              // Strip MIME boundaries and trailing garbage
-              body = body.replace(/----==_mimepart[\s\S]*$/g, "").trim()
+
               if (body.length > 2000) body = body.slice(0, 2000) + "\n...(truncated)"
 
               // Extract repo/PR from subject if GitHub email
