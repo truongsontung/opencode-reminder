@@ -130,7 +130,6 @@ export function mailboxStart(args: { session_id: string; name?: string; gmail_la
   if (sessions[sessionId] && !sessions[sessionId].active) {
     sessions[sessionId].active = true
     sessions[sessionId].stopped_at = null
-    if (args.gmail_label) sessions[sessionId].gmail_label = args.gmail_label
     saveSessions(sessions)
     return JSON.stringify({ status: "reactivated", session_id: sessionId, mailbox: sessions[sessionId].address, code: sessions[sessionId].code, gmail_label: sessions[sessionId].gmail_label })
   }
